@@ -943,6 +943,16 @@ ForceReflex=2   ; Forces Reflex / AntiLag2 / XeLL timing markers even when locke
   }
 }
 
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.has('tab')) {
+  const t = parseInt(urlParams.get('tab'), 10);
+  if (!Number.isNaN(t) && t >= 0 && t <= 6) {
+    currentTab = t;
+    for (let i = 0; i < 7; i++) {
+      document.getElementById('nav' + i).className = 'nav-btn' + (i === t ? ' active' : '');
+    }
+  }
+}
 fetchState();
 </script>
 </body>
