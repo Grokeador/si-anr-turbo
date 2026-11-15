@@ -813,7 +813,7 @@ function renderTab() {
     el.innerHTML = `
       <div class="grid-3">
         <div class="card"><div class="metric-lbl">nvngx_dlssg.dll Detected</div><div class="metric-val">${(a.dll_size_bytes/1048576).toFixed(2)} MB</div><div class="metric-lbl">ANR FG Beta V.B18 Engine</div></div>
-        <div class="card"><div class="metric-lbl">Detected Beta Flaws</div><div class="metric-val" style="color:${a.issue_count?'#f87171':'var(--accent)'}">${a.issue_count} / 6</div><div class="metric-lbl">Binary, JSON & INI Checks</div></div>
+        <div class="card"><div class="metric-lbl">Detected Beta Flaws</div><div class="metric-val" style="color:${a.issue_count?'#f87171':'var(--accent)'}">${a.issue_count} / 7</div><div class="metric-lbl">Binary, JSON & INI Checks</div></div>
         <div class="card"><div class="metric-lbl">Anti-Cheat Shield</div><div class="metric-val">${a.anticheat.safe_to_inject ? 'SAFE' : 'BLOCKED'}</div><div class="metric-lbl">${a.anticheat.scanned_files} Game Files Verified</div></div>
       </div>
       <div class="card">
