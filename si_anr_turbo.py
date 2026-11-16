@@ -1081,7 +1081,15 @@ function renderTab() {
   }
 }
 
+const _up = new URLSearchParams(window.location.search);
+if (_up.has('tab')) {
+  const _t = parseInt(_up.get('tab'), 10);
+  if (!Number.isNaN(_t) && _t >= 0 && _t <= 3) showTab(_t);
+}
+if (_up.has('msg')) setToast(_up.get('msg'), true);
+
 fetchState();
+pollTelemetry();
 setInterval(pollTelemetry, 900);
 </script>
 </body>
