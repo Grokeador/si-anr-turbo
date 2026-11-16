@@ -1,14 +1,7 @@
-#!/usr/bin/env python3
-"""SI-ANR-Turbo: Diagnostics, Anti-Cheat Guard & Mod Patcher for Apex Neural Rendering (ANR FG V.B18).
-
-Solves 4 documented limitations in ANR FG Beta V.B18:
-  1. Unlocks missing resolution tiers in size_table.json (Ada/Blackwell 2160p, Turing 1080p/1440p, AMD & Intel)
-     and calibrates path_table.json backend priorities (dp4a INT8, XMX, coopmat).
-  2. Prevents Issue #46 VRAM ring-buffer exhaustion by calibrating max_generated in nr_fg.ini
-     and generating a launcher enabling nvngx_dlssg.dll's NR_BARRIER_ELIDE=1 environment flag.
-  3. Eliminates HUD ghosting (Issues #14, #17, #50, #51), disk-logging stutter (LogLevel=5 -> 2),
-     and No Flip Metering micro-stutter (Issue #45) inside OptiScaler.ini.
-  4. Enforces an Anti-Cheat Ban Shield + SHA-256 verified backup and 1-click rollback.
+"""
+SI-ANR-Turbo v2.0 — Upgraded Native nvngx_dlssg.dll Smart-Shield & 1-Click Installer/Optimizer
+Target: Apex Neural Rendering (ANR FG V.B18) — https://github.com/apex-compute/ANR
+Repository: https://github.com/Grokeador/si-anr-turbo
 """
 
 from __future__ import annotations
@@ -17,7 +10,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -28,63 +20,79 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-APP_VERSION = "1.0.0"
-
-ANTICHEAT_SIGNATURES: dict[str, str] = {
-    "easyanticheat": "EasyAntiCheat (Epic Online Services)",
-    "eac_launcher": "EasyAntiCheat EOS Bootstrapper",
-    "battleye": "BattlEye Anti-Cheat",
-    "beclient": "BattlEye Client Runtime",
-    "vgk.sys": "Riot Vanguard Kernel Anti-Cheat",
-    "vanguard": "Riot Vanguard Usermode",
-    "ricochet": "Call of Duty RICOCHET Kernel Driver",
-    "eaanticheat": "EA Javelin AntiCheat",
-    "gameguard": "nProtect GameGuard",
-    "xigncode": "Wellbia XIGNCODE3",
-}
-
-VCPP_RUNTIME_DLLS = (
-    "MSVCP140.dll",
-    "MSVCP140_ATOMIC_WAIT.dll",
-    "VCRUNTIME140.dll",
-    "VCRUNTIME140_1.dll",
+from turbo_system import (
+    ANR_RELEASES_API,
+    VCPP_RUNTIME_DLLS,
+    check_hags_enabled,
+    check_vcpp_runtime,
+    detect_system_gpu,
+    discover_installed_games,
+    download_and_install_official_anr,
+    launch_game_directory,
+    read_live_telemetry,
 )
 
+APP_VERSION = "2.0.0"
+APP_ROOT = Path(__file__).resolve().parent
+SHIM_DLL_SOURCE = APP_ROOT / "native" / "bin" / "nvngx_dlssg.dll"
+DEFAULT_TARGET_DIR = r"C:\YOUTUBE\TOOLS\anr-fg-V.B18\demo_patched_game"
+
+DEFAULT_OPTIONS: dict[str, Any] = {
+    "unlock_tables": True,
+    "crash_vram_shield": True,
+    "hud_log_fix": True,
+    "spike_pacing_guard": True,
+    "gamepass_vulkan_spoof": False,
+}
+
+ANTICHEAT_SIGNATURES: dict[str, str] = {
+    "easyanticheat": "EasyAntiCheat (EOS / Kernel Ban Risk)",
+    "eac_launcher": "EasyAntiCheat Launcher",
+    "battleye": "BattlEye Anti-Cheat (Kernel Ban Risk)",
+    "beclient": "BattlEye Client",
+    "vgk.sys": "Riot Vanguard (Kernel Anti-Cheat)",
+    "vgc.exe": "Riot Vanguard Client",
+    "faceit": "FACEIT Anti-Cheat",
+    "gameguard": "nProtect GameGuard",
+    "xigncode": "XIGNCODE3",
+    "ricochet": "COD RICOCHET Driver",
+}
+
 GPU_PROFILES: dict[str, dict[str, Any]] = {
-    "rtx_50_40_16gb": {
-        "label": "NVIDIA RTX 40 / 50 Series (Ada / Blackwell • 12-24GB VRAM)",
-        "vendor": "nvidia",
-        "path": "coopmat",
-        "max_generated": 2,
-    },
     "rtx_30_20_8gb": {
-        "label": "NVIDIA RTX 20 / 30 Series (Turing / Ampere • 8GB VRAM Safe)",
+        "label": "NVIDIA RTX 30 / 20 (6-8GB VRAM • 2X Safe)",
         "vendor": "nvidia",
         "path": "coopmat",
         "max_generated": 1,
     },
+    "rtx_50_40_16gb": {
+        "label": "NVIDIA RTX 40 / 50 (12-24GB • 3X High-FPS)",
+        "vendor": "nvidia",
+        "path": "coopmat",
+        "max_generated": 2,
+    },
     "gtx_16_dp4a": {
-        "label": "NVIDIA GTX 16 Series (Turing INT8 DP4A • 6GB VRAM Safe)",
+        "label": "NVIDIA GTX 16 Series (Turing • DP4A INT8)",
         "vendor": "nvidia",
         "path": "dp4a",
         "max_generated": 1,
     },
     "amd_rdna3_4": {
-        "label": "AMD Radeon RX 7000 / 9000 (RDNA 3 / 4 • Vulkan Linalg/DP4A)",
+        "label": "AMD Radeon RX 7000 / 9000 (RDNA 3/4 • Linalg)",
         "vendor": "amd",
-        "path": "portable-linalg",
+        "path": "linalg",
         "max_generated": 2,
     },
     "amd_rdna2_deck": {
-        "label": "AMD Radeon RX 6000 / Steam Deck (RDNA 2 • DP4A VRAM Safe)",
+        "label": "AMD Radeon RX 6000 / Steam Deck (RDNA 2 • DP4A)",
         "vendor": "amd",
         "path": "dp4a",
         "max_generated": 1,
     },
     "intel_arc_xmx": {
-        "label": "Intel Arc A / B Series (Alchemist / Battlemage • XMX Engine)",
+        "label": "Intel Arc A / B Series / B390 (XMX Engine)",
         "vendor": "intel",
         "path": "portable-xmx",
         "max_generated": 1,
@@ -102,13 +110,16 @@ def sha256_file(path: Path) -> str:
 
 
 def resolve_anr_paths(game_dir: Path) -> dict[str, Path]:
-    """Locate standard ANR FG & OptiScaler files inside a game directory."""
+    """Locate ANR FG, OptiScaler, native Smart-Shield DLL, and backup files inside a game directory."""
     anr_dlssg = game_dir / "OptiScaler" / "custom" / "Apex Neural Rendering FG" / "dlssg"
     return {
         "game_dir": game_dir,
         "optiscaler_ini": game_dir / "OptiScaler.ini",
         "anr_dlssg_dir": anr_dlssg,
         "nvngx_dlssg_dll": anr_dlssg / "nvngx_dlssg.dll",
+        "nvngx_dlssg_core_dll": anr_dlssg / "nvngx_dlssg_core.dll",
+        "dll_shield_ini": anr_dlssg / "si_anr_turbo_dll.ini",
+        "dll_shield_log": anr_dlssg / "si_anr_turbo_dll.log",
         "nr_fg_ini": anr_dlssg / "nr_fg.ini",
         "size_table": anr_dlssg / "size_table.json",
         "path_table": anr_dlssg / "path_table.json",
@@ -119,9 +130,9 @@ def resolve_anr_paths(game_dir: Path) -> dict[str, Path]:
 
 
 def scan_anticheat(game_dir: Path, max_depth: int = 3) -> dict[str, Any]:
-    """Scan game folder for common kernel/usermode Anti-Cheat runtimes."""
+    """Scan game folder for kernel/usermode Anti-Cheat runtimes before injecting DLLs."""
     if not game_dir.exists() or not game_dir.is_dir():
-        return {"ok": False, "error": f"Folder not found: {game_dir}", "safe_to_inject": False, "hits": []}
+        return {"ok": False, "error": f"Folder not found: {game_dir}", "safe_to_inject": False, "hits": [], "executables": [], "scanned_files": 0, "missing_vcpp_dlls": check_vcpp_runtime()}
 
     hits: list[dict[str, str]] = []
     executables: list[str] = []
@@ -140,8 +151,8 @@ def scan_anticheat(game_dir: Path, max_depth: int = 3) -> dict[str, Any]:
         for f in files:
             scanned_files += 1
             low_f = f.lower()
-            if low_f.endswith(".exe") and depth == 0:
-                executables.append(f)
+            if low_f.endswith(".exe") and depth <= 2:
+                executables.append(str(Path(root, f).relative_to(game_dir)))
             for sig, desc in ANTICHEAT_SIGNATURES.items():
                 if sig in low_f:
                     hits.append({"path": str(Path(root, f).relative_to(game_dir)), "engine": desc})
@@ -153,7 +164,6 @@ def scan_anticheat(game_dir: Path, max_depth: int = 3) -> dict[str, Any]:
             seen.add(h["path"])
             dedup.append(h)
 
-    missing_vcpp = check_vcpp_runtime()
     return {
         "ok": True,
         "game_dir": str(game_dir),
@@ -161,18 +171,12 @@ def scan_anticheat(game_dir: Path, max_depth: int = 3) -> dict[str, Any]:
         "executables": executables,
         "hits": dedup,
         "safe_to_inject": len(dedup) == 0,
-        "missing_vcpp_dlls": missing_vcpp,
+        "missing_vcpp_dlls": check_vcpp_runtime(),
     }
 
 
-def check_vcpp_runtime() -> list[str]:
-    """Check if required Microsoft Visual C++ 2015-2022 Redistributable DLLs exist."""
-    sys32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
-    return [dll for dll in VCPP_RUNTIME_DLLS if not (sys32 / dll).exists()]
-
-
 def parse_ini_kv(text: str) -> dict[str, dict[str, str]]:
-    """Parse INI file sections and key=value pairs while tolerating comments."""
+    """Parse INI sections and key=value pairs while tolerating comments."""
     result: dict[str, dict[str, str]] = {"__root__": {}}
     section = "__root__"
     for raw in text.splitlines():
@@ -190,7 +194,7 @@ def parse_ini_kv(text: str) -> dict[str, dict[str, str]]:
 
 
 def update_ini_sectioned(text: str, updates: dict[str, dict[str, str]]) -> str:
-    """Update INI keys inside specific sections, preserving comments and formatting."""
+    """Update INI keys inside sections, preserving existing comments and formatting."""
     lines = text.splitlines()
     out: list[str] = []
     current_section = "__root__"
@@ -234,20 +238,38 @@ def update_ini_sectioned(text: str, updates: dict[str, dict[str, str]]) -> str:
     return "\n".join(out) + "\n"
 
 
+def _is_shim_installed(paths: dict[str, Path]) -> bool:
+    if not SHIM_DLL_SOURCE.exists() or not paths["nvngx_dlssg_dll"].exists() or not paths["nvngx_dlssg_core_dll"].exists():
+        return False
+    return sha256_file(paths["nvngx_dlssg_dll"]) == sha256_file(SHIM_DLL_SOURCE)
+
+
 def audit_installation(game_dir: Path) -> dict[str, Any]:
-    """Inspect ANR FG V.B18 files and report unpatched issues + SI-ANR-Turbo readiness."""
+    """Inspect ANR FG V.B18 files and report unpatched issues + native Smart-Shield status."""
     paths = resolve_anr_paths(game_dir)
     issues: list[dict[str, str]] = []
 
     dll_ok = paths["nvngx_dlssg_dll"].exists()
     dll_size = paths["nvngx_dlssg_dll"].stat().st_size if dll_ok else 0
+    core_dll_size = paths["nvngx_dlssg_core_dll"].stat().st_size if paths["nvngx_dlssg_core_dll"].exists() else 0
+    shim_active = _is_shim_installed(paths) and paths["dll_shield_ini"].exists()
 
     nr_fg_kv = parse_ini_kv(paths["nr_fg_ini"].read_text(encoding="utf-8", errors="replace")).get("__root__", {}) if paths["nr_fg_ini"].exists() else {}
     opti_kv = parse_ini_kv(paths["optiscaler_ini"].read_text(encoding="utf-8", errors="replace")) if paths["optiscaler_ini"].exists() else {}
     size_tbl = json.loads(paths["size_table"].read_text(encoding="utf-8")) if paths["size_table"].exists() else {}
     path_tbl = json.loads(paths["path_table"].read_text(encoding="utf-8")) if paths["path_table"].exists() else {}
 
-    # Audit 1: size_table.json completeness
+    # 1. Native Smart-Shield DLL Proxy Status
+    if dll_ok and not shim_active:
+        issues.append({
+            "id": "NATIVE_DLL_SHIELD_MISSING",
+            "severity": "HIGH",
+            "file": "nvngx_dlssg.dll",
+            "title": "Stock ANR DLL Lacks Crash Shield, VRAM Clamp & Spike Guard",
+            "detail": "Stock V.B18 nvngx_dlssg.dll has no null/SEH crash guard (#72), no dynamic VRAM MultiFrame clamp (#60), no missing-HUDLess shield (#24), and no camera-cut/spike suppression (#64/#68).",
+        })
+
+    # 2. size_table.json completeness
     entries_by_key = {(e.get("vendor"), e.get("architecture")): e for e in size_tbl.get("entries", [])}
     missing_4k_ada = "2160p" not in entries_by_key.get(("nvidia", "ada"), {}).get("large", {})
     missing_4k_bw = "2160p" not in entries_by_key.get(("nvidia", "blackwell"), {}).get("large", {})
@@ -255,19 +277,16 @@ def audit_installation(game_dir: Path) -> dict[str, Any]:
     has_amd = any(e.get("vendor") == "amd" for e in size_tbl.get("entries", []))
     has_intel = any(e.get("vendor") == "intel" for e in size_tbl.get("entries", []))
 
-    if missing_4k_ada or missing_4k_bw or missing_turing_1080 or not has_amd or not has_intel:
+    if size_tbl and (missing_4k_ada or missing_4k_bw or missing_turing_1080 or not has_amd or not has_intel):
         issues.append({
             "id": "SIZE_TABLE_GAPS",
             "severity": "HIGH",
             "file": "size_table.json",
-            "title": "Incomplete Neural Program Size Table",
-            "detail": (
-                f"Stock V.B18 gaps: Ada 2160p missing={missing_4k_ada}, Blackwell 2160p missing={missing_4k_bw}, "
-                f"Turing 1080p/1440p missing={missing_turing_1080}, AMD entries={has_amd}, Intel entries={has_intel}."
-            ),
+            "title": "Incomplete Neural Program Size Table (Missing 4K / AMD / Intel)",
+            "detail": f"Ada 2160p missing={missing_4k_ada}, Blackwell 2160p missing={missing_4k_bw}, Turing 1080p missing={missing_turing_1080}, AMD={has_amd}, Intel={has_intel}.",
         })
 
-    # Audit 2: path_table.json prediction / suboptimal coopmat fallbacks
+    # 3. path_table.json prediction paths + Arc B390 (#22)
     pred_count = sum(
         1
         for entry in path_tbl.get("entries", [])
@@ -275,94 +294,108 @@ def audit_installation(game_dir: Path) -> dict[str, Any]:
         and entry.get("order")
         and entry["order"][0].get("source") == "prediction"
     )
-    if pred_count > 0:
+    bm_ids = next((e.get("device_ids", []) for e in path_tbl.get("entries", []) if e.get("vendor") == "intel" and e.get("architecture") == "battlemage"), [])
+    missing_b390 = bool(path_tbl) and ("0xb080" not in [str(x).lower() for x in bm_ids])
+    if pred_count > 0 or missing_b390:
         issues.append({
             "id": "PATH_TABLE_PREDICTION",
             "severity": "MEDIUM",
             "file": "path_table.json",
-            "title": "Prediction-Only Primary Kernel Priorities",
-            "detail": f"{pred_count} PC/Steam Deck GPU architectures use uncalibrated 'prediction' paths first (e.g. Ampere, RDNA2/Steam Deck, Alchemist XMX).",
+            "title": "Uncalibrated Prediction Paths & Missing Arc B390 (#22)",
+            "detail": f"{pred_count} GPU architectures start on prediction-only backends; Intel Arc B390 (0x8086:0xb080) missing={missing_b390}.",
         })
 
-    # Audit 3: nr_fg.ini max_generated=5 VRAM crash risk (Issue #46) + NR_BARRIER_ELIDE
+    # 4. nr_fg.ini max_generated=5 VRAM freeze risk (Issue #46)
     max_gen = nr_fg_kv.get("max_generated", "5")
-    if str(max_gen).strip() == "5":
+    if nr_fg_kv and str(max_gen).strip() == "5":
         issues.append({
             "id": "VRAM_RINGBUFFER_FREEZE",
             "severity": "HIGH",
             "file": "nr_fg.ini",
-            "title": "Issue #46 Risk: max_generated = 5 (6X VRAM Allocation)",
-            "detail": "Default max_generated=5 pre-allocates 5 generated frame slots, triggering VRAM exhaustion / GPU MMU freezes on 8-12GB GPUs.",
-        })
-    if not paths["launcher_cmd"].exists():
-        issues.append({
-            "id": "BARRIER_ELIDE_OFF",
-            "severity": "MEDIUM",
-            "file": "launch_anr_turbo.cmd",
-            "title": "Hidden nvngx_dlssg.dll Flag NR_BARRIER_ELIDE Inactive",
-            "detail": "Compiled env flag NR_BARRIER_ELIDE=1 reduces redundant D3D12/Vulkan queue barriers when launched via ANR Turbo.",
+            "title": "Issue #46 / #60 Risk: max_generated = 5 (6X VRAM Allocation)",
+            "detail": "Default max_generated=5 allocates huge 6X ring buffers, causing OutOfMemory / GPU MMU freezes on 8-12GB cards.",
         })
 
-    # Audit 4: OptiScaler.ini LogLevel=5 stutter, HUD Ghosting & Flip Metering (Issues #14, #17, #45, #50, #51)
+    # 5. OptiScaler LogLevel=5 disk I/O stutter
     log_sec = opti_kv.get("Log", {})
-    if log_sec.get("LogToFile", "").lower() == "true" or str(log_sec.get("LogLevel", "")) == "5":
+    if opti_kv and (log_sec.get("LogToFile", "").lower() == "true" or str(log_sec.get("LogLevel", "")) == "5"):
         issues.append({
             "id": "TRACE_LOG_STUTTER",
             "severity": "HIGH",
             "file": "OptiScaler.ini",
-            "title": "Excessive Disk Trace Logging (LogLevel=5)",
-            "detail": "Stock V.B18 ships with LogToFile=true and LogLevel=5 (above Trace), writing frame-level logs to disk.",
+            "title": "Excessive Disk Trace Logging (LogToFile=true, LogLevel=5)",
+            "detail": "Stock V.B18 writes verbose trace logs to disk during gameplay, causing periodic I/O frame-time hitches.",
         })
 
+    # 6. HUD ghosting & DisableUI=auto default trap
     fg_sec = opti_kv.get("FrameGen", {})
     optifg_sec = opti_kv.get("OptiFG", {})
-    if fg_sec.get("DrawUIOverFG", "auto") == "auto" or optifg_sec.get("HUDFix", "auto") == "auto":
+    if opti_kv and (fg_sec.get("DrawUIOverFG", "auto") == "auto" or fg_sec.get("DisableUI", "auto") == "auto" or optifg_sec.get("HUDFix", "auto") == "auto"):
         issues.append({
             "id": "HUD_GHOSTING_EXPOSED",
             "severity": "HIGH",
             "file": "OptiScaler.ini",
             "title": "Issues #14/#17/#50/#51: Unprotected HUD & UI Layers",
-            "detail": "DrawUIOverFG, HudlessValidNow, and HUDFixExtended are left on 'auto', causing crosshair/minimap smearing.",
+            "detail": "DrawUIOverFG and HUDFix are left on 'auto' while DisableUI=auto defaults to 'true', causing HUD smearing.",
         })
 
+    # 7. Frame Pacing & Flip Metering (#45)
     fsrfg_sec = opti_kv.get("FSRFG", {})
-    if fsrfg_sec.get("FramePacingTuning", "auto") == "auto" or opti_kv.get("fakenvapi", {}).get("ForceReflex", "auto") == "auto":
+    if opti_kv and (fsrfg_sec.get("FramePacingTuning", "auto") == "auto" or opti_kv.get("fakenvapi", {}).get("ForceReflex", "auto") == "auto"):
         issues.append({
             "id": "NO_FLIP_METERING",
             "severity": "MEDIUM",
             "file": "OptiScaler.ini",
-            "title": "Issue #45: Uncalibrated Frame Pacing & Flip Metering",
-            "detail": "FramePacingTuning, DisableFlipMetering, and ForceReflex=2 are unconfigured, creating uneven frame delivery.",
+            "title": "Issue #45: Uncalibrated Frame Pacing & Reflex Markers",
+            "detail": "Flip Metering & ForceReflex remain unconfigured, causing uneven frame delivery.",
         })
 
     anticheat = scan_anticheat(game_dir)
+    anr_present = dll_ok and paths["nr_fg_ini"].exists() and paths["optiscaler_ini"].exists()
     return {
-        "ok": dll_ok and paths["nr_fg_ini"].exists() and paths["optiscaler_ini"].exists(),
+        "ok": anr_present,
+        "anr_installed": anr_present,
+        "native_shim_active": shim_active,
+        "native_shim_available": SHIM_DLL_SOURCE.exists(),
         "game_dir": str(game_dir),
         "dll_found": dll_ok,
         "dll_size_bytes": dll_size,
+        "core_dll_size_bytes": core_dll_size,
         "backup_exists": paths["backup_manifest"].exists(),
-        "issue_count": len(issues),
+        "issue_count": len(issues) if anr_present else 0,
         "issues": issues,
         "anticheat": anticheat,
         "current_config": {
             "nr_fg": nr_fg_kv,
             "optiscaler_log": log_sec,
-            "optiscaler_framegen": {k: fg_sec.get(k, "auto") for k in ("FGInput", "FGNvngxReplacement", "DrawUIOverFG", "HudlessValidNow")},
+            "optiscaler_framegen": {k: fg_sec.get(k, "auto") for k in ("FGInput", "FGNvngxReplacement", "DrawUIOverFG", "DisableUI", "HudlessValidNow")},
             "optiscaler_pacing": {k: fsrfg_sec.get(k, "auto") for k in ("DisableFlipMetering", "FramePacingTuning", "FPTSafetyMarginInMs", "FPTHybridSpin")},
         },
     }
 
 
 def create_backup(game_dir: Path) -> dict[str, Any]:
-    """Create SHA-256 verified backup of ANR/OptiScaler config & tables prior to patching."""
+    """Create SHA-256 verified backup of ANR/OptiScaler config, JSON tables, and stock nvngx_dlssg.dll."""
     paths = resolve_anr_paths(game_dir)
     paths["backup_dir"].mkdir(parents=True, exist_ok=True)
     if paths["backup_manifest"].exists():
-        return json.loads(paths["backup_manifest"].read_text(encoding="utf-8"))
+        manifest = json.loads(paths["backup_manifest"].read_text(encoding="utf-8"))
+        # Backfill nvngx_dlssg_dll into an older v1 manifest if stock DLL is still present
+        files_map = manifest.setdefault("files", {})
+        if "nvngx_dlssg_dll" not in files_map and paths["nvngx_dlssg_dll"].exists():
+            src_dll = paths["nvngx_dlssg_core_dll"] if paths["nvngx_dlssg_core_dll"].exists() else paths["nvngx_dlssg_dll"]
+            dst = paths["backup_dir"] / "nvngx_dlssg.dll"
+            shutil.copy2(src_dll, dst)
+            files_map["nvngx_dlssg_dll"] = {
+                "original_path": str(paths["nvngx_dlssg_dll"]),
+                "backup_file": dst.name,
+                "sha256": sha256_file(src_dll),
+            }
+            paths["backup_manifest"].write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return manifest
 
-    targets = ["optiscaler_ini", "nr_fg_ini", "size_table", "path_table"]
-    manifest: dict[str, Any] = {
+    targets = ["optiscaler_ini", "nr_fg_ini", "size_table", "path_table", "nvngx_dlssg_dll"]
+    manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "game_dir": str(game_dir),
         "files": {},
@@ -381,14 +414,70 @@ def create_backup(game_dir: Path) -> dict[str, Any]:
     return manifest
 
 
+def install_native_dll_shim(game_dir: Path, options: dict[str, Any] | None = None, profile_key: str = "rtx_30_20_8gb") -> dict[str, Any]:
+    """
+    Deploy native compiled x64 nvngx_dlssg.dll Smart-Shield proxy and write si_anr_turbo_dll.ini,
+    while preserving the untouched official Apex binary as nvngx_dlssg_core.dll.
+    """
+    if not SHIM_DLL_SOURCE.exists():
+        return {"ok": False, "error": f"Compiled native DLL not found at {SHIM_DLL_SOURCE}"}
+    opts = {**DEFAULT_OPTIONS, **(options or {})}
+    paths = resolve_anr_paths(game_dir)
+    if not paths["nvngx_dlssg_dll"].exists():
+        return {"ok": False, "error": "nvngx_dlssg.dll missing in target game directory."}
+
+    shim_hash = sha256_file(SHIM_DLL_SOURCE)
+    current_hash = sha256_file(paths["nvngx_dlssg_dll"])
+
+    # Move original official Apex DLL to nvngx_dlssg_core.dll if not already preserved
+    if current_hash != shim_hash:
+        shutil.copy2(paths["nvngx_dlssg_dll"], paths["nvngx_dlssg_core_dll"])
+    elif not paths["nvngx_dlssg_core_dll"].exists():
+        bak_dll = paths["backup_dir"] / "nvngx_dlssg.dll"
+        if bak_dll.exists():
+            shutil.copy2(bak_dll, paths["nvngx_dlssg_core_dll"])
+        else:
+            return {"ok": False, "error": "nvngx_dlssg_core.dll missing and no backup snapshot exists."}
+
+    shutil.copy2(SHIM_DLL_SOURCE, paths["nvngx_dlssg_dll"])
+
+    prof = GPU_PROFILES.get(profile_key, GPU_PROFILES["rtx_30_20_8gb"])
+    max_cap = 0 if opts.get("crash_vram_shield", True) else 5
+    if opts.get("crash_vram_shield", True) and opts.get("max_generated_override"):
+        max_cap = int(opts["max_generated_override"])
+    elif opts.get("crash_vram_shield", True) and profile_key != "auto":
+        # 0 lets DLL also auto-clamp if actual DXGI VRAM is smaller than user-selected profile
+        max_cap = int(prof["max_generated"])
+
+    ini_body = (
+        "; Generated automatically by SI-ANR-Turbo v2.0\n"
+        "[Turbo]\n"
+        f"EnableBarrierElide={1 if opts.get('crash_vram_shield', True) else 0}\n"
+        f"MaxGeneratedCap={max_cap}\n"
+        f"CrashShield={1 if opts.get('crash_vram_shield', True) else 0}\n"
+        f"HudShield={1 if opts.get('hud_log_fix', True) else 0}\n"
+        "StrictHudFallback=0\n"
+        f"SceneCutAutoReset={1 if opts.get('spike_pacing_guard', True) else 0}\n"
+        f"SpikeGuardMs={52 if opts.get('spike_pacing_guard', True) else 0}\n"
+        "DiagLog=1\n"
+    )
+    paths["dll_shield_ini"].write_text(ini_body, encoding="utf-8")
+    return {
+        "ok": True,
+        "shim_bytes": paths["nvngx_dlssg_dll"].stat().st_size,
+        "core_bytes": paths["nvngx_dlssg_core_dll"].stat().st_size,
+        "max_generated_cap": max_cap,
+    }
+
+
 def rollback_backup(game_dir: Path) -> dict[str, Any]:
-    """Restore original SHA-256 verified files and remove SI-ANR-Turbo launcher."""
+    """Restore original SHA-256 verified files (including original nvngx_dlssg.dll) and clean shim files."""
     paths = resolve_anr_paths(game_dir)
     if not paths["backup_manifest"].exists():
         return {"ok": False, "error": "No SI-ANR-Turbo backup manifest found."}
     manifest = json.loads(paths["backup_manifest"].read_text(encoding="utf-8"))
     restored: list[str] = []
-    for key, meta in manifest.get("files", {}).items():
+    for _, meta in manifest.get("files", {}).items():
         b_file = paths["backup_dir"] / meta["backup_file"]
         orig_path = Path(meta["original_path"])
         if b_file.exists():
@@ -396,18 +485,19 @@ def rollback_backup(game_dir: Path) -> dict[str, Any]:
             if sha256_file(orig_path) != meta["sha256"]:
                 return {"ok": False, "error": f"SHA-256 verification failed restoring {orig_path.name}"}
             restored.append(orig_path.name)
-    if paths["launcher_cmd"].exists():
-        paths["launcher_cmd"].unlink()
+
+    for cleanup in (paths["launcher_cmd"], paths["nvngx_dlssg_core_dll"], paths["dll_shield_ini"], paths["dll_shield_log"]):
+        if cleanup.exists():
+            cleanup.unlink()
     return {"ok": True, "restored": restored}
 
 
 def patch_neural_tables(game_dir: Path) -> dict[str, Any]:
-    """Fix size_table.json gaps and calibrate path_table.json kernel ordering."""
+    """Fix size_table.json gaps and calibrate path_table.json kernel ordering (incl. Arc B390 #22)."""
     paths = resolve_anr_paths(game_dir)
     size_tbl = json.loads(paths["size_table"].read_text(encoding="utf-8"))
     path_tbl = json.loads(paths["path_table"].read_text(encoding="utf-8"))
 
-    # Patch size_table.json
     full_large = {"1080p": [2, 6], "1440p": [2, 6], "2160p": [2, 6]}
     safe_large = {"1080p": [2, 3], "1440p": [2, 3], "2160p": [2, 2]}
     existing = {(e.get("vendor"), e.get("architecture")): e for e in size_tbl.get("entries", [])}
@@ -440,7 +530,6 @@ def patch_neural_tables(game_dir: Path) -> dict[str, Any]:
 
     paths["size_table"].write_text(json.dumps(size_tbl, indent=2), encoding="utf-8")
 
-    # Patch path_table.json primary kernel priority for Ampere/RDNA2/Steam Deck/RDNA1/Intel Arc
     tuned_orders: dict[tuple[str, str], list[dict[str, str]]] = {
         ("nvidia", "ampere"): [
             {"path": "vulkan-coopmat", "source": "turbo_calibrated"},
@@ -492,17 +581,22 @@ def patch_neural_tables(game_dir: Path) -> dict[str, Any]:
         if k in tuned_orders:
             entry["order"] = tuned_orders[k]
             updated_archs.append(f"{k[0]}/{k[1]}")
+        if k == ("intel", "battlemage"):
+            ids = entry.setdefault("device_ids", [])
+            if "0xb080" not in [str(x).lower() for x in ids]:
+                ids.append("0xb080")
 
     paths["path_table"].write_text(json.dumps(path_tbl, indent=2), encoding="utf-8")
     return {
         "ok": True,
         "size_table_entries": len(size_tbl.get("entries", [])),
         "tuned_path_architectures": updated_archs,
+        "arc_b390_added": True,
     }
 
 
 def patch_vram_and_barrier(game_dir: Path, profile_key: str = "rtx_30_20_8gb") -> dict[str, Any]:
-    """Calibrate nr_fg.ini for VRAM safety (Issue #46) and generate NR_BARRIER_ELIDE=1 launcher."""
+    """Calibrate nr_fg.ini for VRAM safety (#46/#60) and generate NR_BARRIER_ELIDE=1 launcher."""
     paths = resolve_anr_paths(game_dir)
     profile = GPU_PROFILES.get(profile_key, GPU_PROFILES["rtx_30_20_8gb"])
     raw = paths["nr_fg_ini"].read_text(encoding="utf-8", errors="replace")
@@ -518,12 +612,11 @@ def patch_vram_and_barrier(game_dir: Path, profile_key: str = "rtx_30_20_8gb") -
     )
     paths["nr_fg_ini"].write_text(patched, encoding="utf-8")
 
-    # Find primary executable for safe launcher creation
     exes = sorted(game_dir.glob("*.exe"), key=lambda p: p.stat().st_size, reverse=True)
     exe_name = exes[0].name if exes else "YOUR_GAME_EXE.exe"
     launcher_body = (
         "@echo off\r\n"
-        "REM SI-ANR-Turbo Safe Launcher: enables internal nvngx_dlssg.dll barrier elision\r\n"
+        "REM SI-ANR-Turbo Safe Launcher: nvngx_dlssg.dll also sets NR_BARRIER_ELIDE=1 automatically in-process\r\n"
         "set NR_BARRIER_ELIDE=1\r\n"
         f"start \"\" \"%~dp0{exe_name}\" %*\r\n"
     )
@@ -538,53 +631,66 @@ def patch_vram_and_barrier(game_dir: Path, profile_key: str = "rtx_30_20_8gb") -
     }
 
 
-def patch_hud_and_pacing(game_dir: Path) -> dict[str, Any]:
-    """Patch OptiScaler.ini to stop LogLevel=5 disk stutter, HUD ghosting, and No Flip Metering."""
+def patch_hud_and_pacing(game_dir: Path, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Patch OptiScaler.ini safely based on Yes/No toggles (stops LogLevel=5 stutter, fixes DisableUI=auto trap)."""
+    opts = {**DEFAULT_OPTIONS, **(options or {})}
     paths = resolve_anr_paths(game_dir)
     raw = paths["optiscaler_ini"].read_text(encoding="utf-8", errors="replace")
-    updates = {
-        "Log": {
-            "LogToFile": "false",
-            "LogLevel": "2",
-        },
-        "FrameGen": {
+    updates: dict[str, dict[str, str]] = {}
+
+    if opts.get("hud_log_fix", True):
+        updates["Log"] = {"LogToFile": "false", "LogLevel": "2"}
+        updates["FrameGen"] = {
             "DrawUIOverFG": "true",
+            "DisableUI": "false",
             "HudlessValidNow": "true",
             "DisableHudless": "false",
-        },
-        "OptiFG": {
+            "PreserveSwapChain": "true",
+            "SkipResizeBuffers": "true",
+        }
+        updates["OptiFG"] = {
             "HUDFix": "true",
-            "HUDFixExtended": "true",
             "HUDFixUITexture": "true",
             "HUDFixUIUnblend": "true",
             "MakeDepthCopy": "true",
             "MakeMVCopy": "true",
-        },
-        "FSRFG": {
+        }
+
+    if opts.get("spike_pacing_guard", True):
+        updates["FSRFG"] = {
             "DisableFlipMetering": "false",
             "FramePacingTuning": "true",
             "FPTSafetyMarginInMs": "0.25",
             "FPTVarianceFactor": "0.15",
             "FPTHybridSpin": "true",
-        },
-        "NvApi": {
-            "DisableFlipMetering": "false",
-        },
-        "DLSSG": {
-            "UseGamesReflexMarkers": "true",
-        },
-        "fakenvapi": {
-            "UseFakenvapi": "true",
-            "ForceReflex": "2",
-        },
-    }
-    patched = update_ini_sectioned(raw, updates)
-    paths["optiscaler_ini"].write_text(patched, encoding="utf-8")
+        }
+        updates["NvApi"] = {"DisableFlipMetering": "false"}
+        updates["DLSSG"] = {"UseGamesReflexMarkers": "true"}
+        updates["fakenvapi"] = {"UseFakenvapi": "true", "ForceReflex": "2"}
+
+    if opts.get("gamepass_vulkan_spoof", False):
+        updates["Spoofing"] = {
+            "StreamlineSpoofing": "true",
+            "SpoofHAGS": "true",
+            "Dxgi": "true",
+            "Vulkan": "true",
+            "VulkanExtensionSpoofing": "true",
+        }
+
+    if updates:
+        patched = update_ini_sectioned(raw, updates)
+        paths["optiscaler_ini"].write_text(patched, encoding="utf-8")
     return {"ok": True, "sections_patched": list(updates.keys())}
 
 
-def apply_all_patches(game_dir: Path, profile_key: str = "rtx_30_20_8gb", force: bool = False) -> dict[str, Any]:
-    """Run Anti-Cheat Shield, create SHA-256 backup, and apply all 4 SI-ANR-Turbo mods."""
+def apply_all_patches(
+    game_dir: Path,
+    profile_key: str = "rtx_30_20_8gb",
+    force: bool = False,
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run Anti-Cheat Shield, snapshot SHA-256 backup, deploy native Smart-Shield DLL, and apply selected mods."""
+    opts = {**DEFAULT_OPTIONS, **(options or {})}
     scan = scan_anticheat(game_dir)
     if not scan["ok"]:
         return {"ok": False, "error": scan.get("error", "Invalid game directory")}
@@ -595,156 +701,185 @@ def apply_all_patches(game_dir: Path, profile_key: str = "rtx_30_20_8gb", force:
             "hits": scan["hits"],
             "error": "Anti-Cheat detected! Injection aborted to protect your account from bans.",
         }
+
+    paths = resolve_anr_paths(game_dir)
+    if not paths["nvngx_dlssg_dll"].exists():
+        return {"ok": False, "needs_official_download": True, "error": "Official ANR V.B18 files not found in this game folder. Click 'Download & Install Official ANR + Mod' first."}
+
     manifest = create_backup(game_dir)
-    tables_res = patch_neural_tables(game_dir)
-    vram_res = patch_vram_and_barrier(game_dir, profile_key=profile_key)
-    hud_res = patch_hud_and_pacing(game_dir)
+    tables_res = patch_neural_tables(game_dir) if opts.get("unlock_tables", True) else {"ok": True, "skipped": True}
+    vram_res = patch_vram_and_barrier(game_dir, profile_key=profile_key) if opts.get("crash_vram_shield", True) else {"ok": True, "skipped": True}
+    hud_res = patch_hud_and_pacing(game_dir, options=opts)
+    shim_res = install_native_dll_shim(game_dir, options=opts, profile_key=profile_key)
     post_audit = audit_installation(game_dir)
     return {
-        "ok": True,
+        "ok": bool(shim_res.get("ok")),
         "backup_files": list(manifest.get("files", {}).keys()),
         "tables": tables_res,
         "vram_barrier": vram_res,
         "hud_pacing": hud_res,
+        "native_dll_shim": shim_res,
         "remaining_issues": post_audit["issue_count"],
     }
 
 
-# ---------------------------------------------------------------------------
-# Web Desktop App UI (--app / --serve)
-# ---------------------------------------------------------------------------
-DEFAULT_TARGET_DIR = r"C:\YOUTUBE\TOOLS\anr-fg-V.B18\demo_patched_game"
+def one_click_setup_and_patch(
+    game_dir: Path,
+    profile_key: str = "rtx_30_20_8gb",
+    options: dict[str, Any] | None = None,
+    force_download: bool = False,
+) -> dict[str, Any]:
+    """Full zero-hassle subscriber flow: Anti-Cheat check -> auto-download official ANR if needed -> apply all upgrades + native DLL."""
+    scan = scan_anticheat(game_dir)
+    if not scan["ok"]:
+        return {"ok": False, "error": scan.get("error", "Invalid game directory")}
+    if not scan["safe_to_inject"]:
+        return {
+            "ok": False,
+            "blocked_by_anticheat": True,
+            "hits": scan["hits"],
+            "error": "Anti-Cheat detected! Blocked before touching any files.",
+        }
 
+    paths = resolve_anr_paths(game_dir)
+    dl_res: dict[str, Any] | None = None
+    if force_download or not paths["nvngx_dlssg_dll"].exists() or not paths["optiscaler_ini"].exists():
+        dl_res = download_and_install_official_anr(game_dir, force_redownload=force_download)
+        if not dl_res.get("ok"):
+            return dl_res
+
+    patch_res = apply_all_patches(game_dir, profile_key=profile_key, options=options)
+    patch_res["official_install"] = dl_res
+    return patch_res
+
+
+# ---------------------------------------------------------------------------
+# Web Desktop App UI (Subscriber-First 3-Step Flow + Live DLL Telemetry)
+# ---------------------------------------------------------------------------
 WEB_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>SI-ANR-Turbo v1.0 — Apex Neural Rendering Optimizer & Safety Mod</title>
+<title>SI-ANR-Turbo v2.0 — 1-Click AI Frame Gen Upgrader & Smart-Shield DLL</title>
 <style>
 :root {
-  --bg: #080d16;
-  --panel: #0f1726;
-  --card: #142033;
-  --border: #243654;
-  --accent: #00e5a3;
-  --blue: #38bdf8;
-  --amber: #f59e0b;
-  --red: #ef4444;
-  --text: #eef4ff;
-  --muted: #8aa0c2;
+  --bg: #070c14; --panel: #0d1624; --card: #121e31; --border: #223554;
+  --accent: #00e5a3; --blue: #38bdf8; --amber: #f59e0b; --red: #ef4444;
+  --text: #eef4ff; --muted: #8ea5c8;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, sans-serif; }
 body { background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .topbar {
-  height: 62px; background: #0b1220; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between; padding: 0 24px;
+  height: 60px; background: #0a111d; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; padding: 0 22px;
 }
-.brand { display: flex; align-items: center; gap: 14px; font-weight: 800; font-size: 20px; letter-spacing: 0.4px; }
-.pill { background: rgba(0,229,163,0.14); color: var(--accent); border: 1px solid rgba(0,229,163,0.45); padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+.brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 19px; }
+.pill { background: rgba(0,229,163,0.14); color: var(--accent); border: 1px solid rgba(0,229,163,0.45); padding: 4px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .pill.blue { background: rgba(56,189,248,0.14); color: var(--blue); border-color: rgba(56,189,248,0.45); }
+.pill.warn { background: rgba(245,158,11,0.16); color: #fcd34d; border-color: rgba(245,158,11,0.45); }
 .main { display: flex; flex: 1; overflow: hidden; }
 .sidebar {
   width: 310px; background: var(--panel); border-right: 1px solid var(--border);
-  padding: 18px 14px; display: flex; flex-direction: column; gap: 8px;
+  padding: 16px 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
 }
 .nav-btn {
-  text-align: left; padding: 14px 16px; border-radius: 10px; border: 1px solid transparent;
-  background: transparent; color: var(--muted); font-size: 15px; font-weight: 600; cursor: pointer;
+  text-align: left; padding: 13px 14px; border-radius: 10px; border: 1px solid transparent;
+  background: transparent; color: var(--muted); font-size: 14.5px; font-weight: 600; cursor: pointer;
   display: flex; justify-content: space-between; align-items: center;
 }
 .nav-btn.active { background: #16263f; color: #fff; border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-.content { flex: 1; padding: 24px 30px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
-.path-bar {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 14px 18px; display: flex; align-items: center; gap: 14px;
+.content { flex: 1; padding: 20px 26px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
+.card h2 { font-size: 18px; margin-bottom: 8px; color: #fff; display: flex; align-items: center; gap: 10px; }
+.sub { font-size: 13.5px; color: var(--muted); margin-bottom: 12px; line-height: 1.45; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.path-bar { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+.path-input, select {
+  background: #08101c; border: 1px solid #2b4268; color: var(--text);
+  padding: 9px 12px; border-radius: 8px; font-size: 13.5px;
 }
-.path-input {
-  flex: 1; background: #09101c; border: 1px solid #2b4268; color: var(--text);
-  padding: 10px 14px; border-radius: 8px; font-family: Consolas, monospace; font-size: 14px;
-}
+.path-input { flex: 1; font-family: Consolas, monospace; }
 .btn {
-  padding: 10px 18px; border-radius: 8px; border: none; font-weight: 700; font-size: 14px;
+  padding: 10px 16px; border-radius: 8px; border: none; font-weight: 700; font-size: 13.5px;
   cursor: pointer; background: var(--accent); color: #041b12;
 }
 .btn.sec { background: #1c2e4a; color: #dbeafe; border: 1px solid #355280; }
+.btn.blue { background: var(--blue); color: #041926; }
 .btn.warn { background: var(--amber); color: #1d1202; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.card {
-  background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px;
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.metric-val { font-size: 28px; font-weight: 800; color: var(--accent); margin: 3px 0; }
+.metric-lbl { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.toggle-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 11px 14px; background: #0c1524; border: 1px solid #223554; border-radius: 10px; margin-bottom: 8px;
 }
-.card h2 { font-size: 19px; margin-bottom: 10px; color: #fff; display: flex; align-items: center; gap: 10px; }
-.card p.sub { font-size: 14px; color: var(--muted); margin-bottom: 14px; line-height: 1.45; }
-.metric-val { font-size: 34px; font-weight: 800; color: var(--accent); margin: 4px 0; }
-.metric-lbl { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.7px; }
+.toggle-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
 .issue-row {
   background: #0c1524; border: 1px solid #263959; border-left: 4px solid var(--amber);
-  border-radius: 10px; padding: 13px 16px; margin-bottom: 10px;
+  border-radius: 10px; padding: 11px 14px; margin-bottom: 8px;
 }
 .issue-row.HIGH { border-left-color: var(--red); }
 .issue-row.FIXED { border-left-color: var(--accent); }
-.tag { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-weight: 700; margin-right: 8px; }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; margin-right: 6px; }
 .tag.HIGH { background: rgba(239,68,68,0.2); color: #fca5a5; }
 .tag.MEDIUM { background: rgba(245,158,11,0.2); color: #fcd34d; }
 .tag.FIXED { background: rgba(0,229,163,0.18); color: var(--accent); }
-.code-box {
-  background: #070c14; border: 1px solid #233452; border-radius: 10px; padding: 14px 16px;
-  font-family: Consolas, monospace; font-size: 13.5px; line-height: 1.55; color: #cbd5e1; white-space: pre-wrap;
+.game-item {
+  display: flex; justify-content: space-between; align-items: center; padding: 10px 13px;
+  background: #0b1321; border: 1px solid #1e3150; border-radius: 9px; margin-bottom: 7px; cursor: pointer;
 }
-.kv-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.kv-table th, .kv-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #1e2f4b; }
-.kv-table th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-.good { color: var(--accent); font-weight: 700; }
-.bad { color: #f87171; font-weight: 700; }
-.bar-wrap { background: #09101b; border-radius: 8px; height: 22px; overflow: hidden; border: 1px solid #223454; margin-top: 6px; }
-.bar-fill { height: 100%; display: flex; align-items: center; padding-left: 10px; font-size: 12px; font-weight: 700; color: #051610; }
+.game-item:hover { border-color: var(--blue); }
+.toast { padding: 11px 16px; border-radius: 10px; font-size: 13.5px; font-weight: 600; display: none; }
+.toast.ok { display: block; background: rgba(0,229,163,0.14); border: 1px solid var(--accent); color: var(--accent); }
+.toast.err { display: block; background: rgba(239,68,68,0.16); border: 1px solid var(--red); color: #fca5a5; }
 </style>
 </head>
 <body>
 <div class="topbar">
   <div class="brand">
-    <span style="color:var(--accent)">&#9889; SI-ANR-TURBO</span>
-    <span class="pill">MOD EDITION v1.0</span>
-    <span class="pill blue">TARGET: ANR FG V.B18</span>
+    <span style="color:var(--accent)">&#9889; SI-ANR-TURBO v2.0</span>
+    <span class="pill">NATIVE SMART-SHIELD DLL</span>
+    <span class="pill blue" id="gpuPill">DETECTING GPU...</span>
   </div>
-  <div style="display:flex;gap:12px;align-items:center">
-    <span class="pill" id="statusPill">LOCAL ENGINE READY</span>
-    <span style="color:var(--muted);font-size:13px">github.com/Grokeador/si-anr-turbo</span>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span class="pill" id="telemPill">DLL SHIELD: STANDBY</span>
+    <span style="color:var(--muted);font-size:12.5px">github.com/Grokeador/si-anr-turbo</span>
   </div>
 </div>
 
 <div class="main">
   <div class="sidebar">
-    <button class="nav-btn active" onclick="showTab(0)" id="nav0">1. Binary & JSON Audit <span class="tag HIGH" id="badgeIssues">6 BUGS</span></button>
-    <button class="nav-btn" onclick="showTab(1)" id="nav1">2. Anti-Cheat Ban Shield <span class="tag FIXED">SAFE</span></button>
-    <button class="nav-btn" onclick="showTab(2)" id="nav2">3. Neural Table Unlocker <span class="tag MEDIUM">4K/AMD/ARC</span></button>
-    <button class="nav-btn" onclick="showTab(3)" id="nav3">4. VRAM & Barrier Tuner <span class="tag HIGH">ISSUE #46</span></button>
-    <button class="nav-btn" onclick="showTab(4)" id="nav4">5. HUD Ghosting Shield <span class="tag HIGH">ISSUE #14</span></button>
-    <button class="nav-btn" onclick="showTab(5)" id="nav5">6. Flip-Metering Pacing <span class="tag MEDIUM">ISSUE #45</span></button>
-    <button class="nav-btn" onclick="showTab(6)" id="nav6">7. Live Telemetry Compare <span class="tag FIXED">0.89ms</span></button>
-    <div style="margin-top:auto;background:#0a1220;border:1px solid #223556;border-radius:12px;padding:14px">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">ACTIVE GPU PROFILE</div>
-      <select id="gpuProfile" style="width:100%;background:#121e33;color:#fff;border:1px solid #2d4670;padding:8px;border-radius:6px;font-size:13px">
-        <option value="rtx_30_20_8gb">RTX 20/30 (8GB Safe • 2X)</option>
-        <option value="rtx_50_40_16gb">RTX 40/50 (Ada/Blackwell • 3X)</option>
-        <option value="gtx_16_dp4a">GTX 16 (Turing INT8 DP4A)</option>
-        <option value="amd_rdna2_deck">AMD RX 6000 / Steam Deck (DP4A)</option>
+    <button class="nav-btn active" onclick="showTab(0)" id="nav0">Step 1: Game & 1-Click Setup <span class="tag FIXED" id="badgeState">AUTO</span></button>
+    <button class="nav-btn" onclick="showTab(1)" id="nav1">Step 2: Yes / No Mod Options</button>
+    <button class="nav-btn" onclick="showTab(2)" id="nav2">Step 3: Audit & Bug Proof <span class="tag HIGH" id="badgeIssues">0</span></button>
+    <button class="nav-btn" onclick="showTab(3)" id="nav3">Bonus: Live DLL Telemetry</button>
+
+    <div style="margin-top:auto;background:#0a1220;border:1px solid #223556;border-radius:12px;padding:13px">
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">DETECTED GPU PROFILE</div>
+      <select id="gpuProfile" style="width:100%;margin-bottom:10px">
+        <option value="rtx_30_20_8gb">RTX 20/30 (6-8GB Safe • 2X)</option>
+        <option value="rtx_50_40_16gb">RTX 40/50 (12-24GB • 3X)</option>
+        <option value="gtx_16_dp4a">GTX 16 Series (DP4A INT8)</option>
+        <option value="amd_rdna2_deck">AMD RX 6000 / Steam Deck</option>
         <option value="amd_rdna3_4">AMD RX 7000 / 9000 (Linalg)</option>
-        <option value="intel_arc_xmx">Intel Arc A / B (XMX Engine)</option>
+        <option value="intel_arc_xmx">Intel Arc A / B / B390 (XMX)</option>
       </select>
-      <button class="btn" style="width:100%;margin-top:10px" onclick="applyAll()">Apply All 4 Turbo Mods</button>
+      <button class="btn" style="width:100%;margin-bottom:8px" onclick="installAndOptimize()">&#9889; 1-Click Install & Optimize</button>
+      <button class="btn blue" style="width:100%;margin-bottom:8px" onclick="launchGame()">&#9654; Launch Game Now</button>
+      <button class="btn warn" style="width:100%" onclick="rollbackAll()">&#8634; Restore Original Files</button>
     </div>
   </div>
 
   <div class="content">
     <div class="path-bar">
-      <span style="font-size:13px;font-weight:700;color:var(--blue)">GAME FOLDER</span>
+      <span style="font-size:12.5px;font-weight:700;color:var(--blue)">GAME FOLDER</span>
       <input class="path-input" id="gamePath" value="">
-      <button class="btn sec" onclick="runAudit()">Scan Folder</button>
-      <button class="btn" onclick="applyAll()">Patch 1-Click</button>
-      <button class="btn warn" onclick="rollbackAll()">Restore Backup</button>
+      <button class="btn sec" onclick="pickGameBrowse()">Browse...</button>
+      <button class="btn sec" onclick="runAudit()">Re-Scan</button>
     </div>
-
+    <div id="toastBox" class="toast"></div>
     <div id="tabContent"></div>
   </div>
 </div>
@@ -752,6 +887,20 @@ body { background: var(--bg); color: var(--text); height: 100vh; display: flex; 
 <script>
 let currentTab = 0;
 let stateData = null;
+let liveTelem = {active: false};
+const opts = {
+  unlock_tables: true,
+  crash_vram_shield: true,
+  hud_log_fix: true,
+  spike_pacing_guard: true,
+  gamepass_vulkan_spoof: false
+};
+
+function setToast(msg, ok=true) {
+  const b = document.getElementById('toastBox');
+  b.textContent = msg;
+  b.className = 'toast ' + (ok ? 'ok' : 'err');
+}
 
 async function fetchState() {
   const path = encodeURIComponent(document.getElementById('gamePath').value || '');
@@ -760,200 +909,180 @@ async function fetchState() {
   if (!document.getElementById('gamePath').value) {
     document.getElementById('gamePath').value = stateData.audit.game_dir;
   }
+  const sys = stateData.system;
+  if (sys && sys.name) {
+    const vramTxt = sys.vram_mb ? (' • ' + Math.round(sys.vram_mb / 1024) + 'GB VRAM') : '';
+    document.getElementById('gpuPill').textContent = sys.name + vramTxt;
+    if (!window._profInitialized && sys.recommended_profile) {
+      document.getElementById('gpuProfile').value = sys.recommended_profile;
+      window._profInitialized = true;
+    }
+  }
   const cnt = stateData.audit.issue_count;
   const b = document.getElementById('badgeIssues');
   b.textContent = cnt === 0 ? '0 BUGS' : cnt + ' BUGS';
   b.className = 'tag ' + (cnt === 0 ? 'FIXED' : 'HIGH');
+  const st = document.getElementById('badgeState');
+  st.textContent = stateData.audit.native_shim_active ? 'SHIELD ON' : (stateData.audit.anr_installed ? 'UPGRADE' : 'READY');
   renderTab();
+}
+
+async function pollTelemetry() {
+  try {
+    const r = await fetch('/api/telemetry');
+    liveTelem = await r.json();
+    const tp = document.getElementById('telemPill');
+    if (liveTelem.active) {
+      tp.textContent = 'LIVE ' + liveTelem.backend + ' • ' + liveTelem.effective_fps + ' FPS • BLOCKED ' + liveTelem.crashes_blocked;
+      tp.className = 'pill';
+    } else {
+      tp.textContent = 'DLL SHIELD: STANDBY';
+      tp.className = 'pill blue';
+    }
+    if (currentTab === 3) renderTab();
+  } catch (e) {}
 }
 
 function showTab(idx) {
   currentTab = idx;
-  for (let i = 0; i < 7; i++) {
-    document.getElementById('nav' + i).className = 'nav-btn' + (i === idx ? ' active' : '');
-  }
+  for (let i = 0; i < 4; i++) document.getElementById('nav' + i).className = 'nav-btn' + (i === idx ? ' active' : '');
   renderTab();
+}
+
+function selectGame(path) {
+  document.getElementById('gamePath').value = path;
+  fetchState();
+}
+
+async function pickGameBrowse() {
+  const res = await fetch('/api/browse', {method: 'POST'});
+  const d = await res.json();
+  if (d.path) {
+    document.getElementById('gamePath').value = d.path;
+    fetchState();
+  }
 }
 
 async function runAudit() { await fetchState(); }
 
-async function applyAll() {
+async function installAndOptimize() {
+  setToast('Checking Anti-Cheat, downloading official ANR if needed & deploying native nvngx_dlssg.dll Smart-Shield...', true);
   const path = document.getElementById('gamePath').value;
   const prof = document.getElementById('gpuProfile').value;
-  await fetch('/api/apply', {
+  const res = await fetch('/api/oneclick', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({game_dir: path, profile: prof})
+    body: JSON.stringify({game_dir: path, profile: prof, options: opts})
   });
+  const d = await res.json();
+  if (d.ok) {
+    setToast('Success! Native Smart-Shield nvngx_dlssg.dll + SHA-256 backup + selected mods are now active.', true);
+  } else {
+    setToast('Blocked / Error: ' + (d.error || 'Unknown error'), false);
+  }
   await fetchState();
 }
 
-async function rollbackAll() {
+async function launchGame() {
   const path = document.getElementById('gamePath').value;
-  await fetch('/api/rollback', {
+  const res = await fetch('/api/launch', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({game_dir: path})
   });
+  const d = await res.json();
+  setToast(d.ok ? ('Launched ' + d.exe + ' (PID ' + d.pid + ') with NR_BARRIER_ELIDE=1') : ('Launch failed: ' + d.error), d.ok);
+}
+
+async function rollbackAll() {
+  const path = document.getElementById('gamePath').value;
+  const res = await fetch('/api/rollback', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({game_dir: path})
+  });
+  const d = await res.json();
+  setToast(d.ok ? ('Restored SHA-256 verified originals: ' + (d.restored || []).join(', ')) : ('Restore note: ' + d.error), d.ok);
   await fetchState();
 }
+
+function toggleOpt(key, val) { opts[key] = val; }
 
 function renderTab() {
   if (!stateData) return;
   const a = stateData.audit;
+  const sys = stateData.system || {};
+  const games = stateData.games || [];
   const el = document.getElementById('tabContent');
 
   if (currentTab === 0) {
-    let issuesHtml = a.issues.length ? a.issues.map(i => `
-      <div class="issue-row ${i.severity}">
-        <div><span class="tag ${i.severity}">${i.severity}</span><strong>${i.title}</strong> <span style="color:var(--blue);font-family:Consolas">[${i.file}]</span></div>
-        <div style="color:var(--muted);font-size:13.5px;margin-top:4px">${i.detail}</div>
-      </div>`).join('') : `<div class="issue-row FIXED"><span class="tag FIXED">ALL PATCHED</span><strong>0 Remaining ANR V.B18 Issues</strong> — Every JSON table, nr_fg.ini VRAM cap, NR_BARRIER_ELIDE flag, and OptiScaler HUD/Flip-Metering guard is active.</div>`;
+    const gamesHtml = games.length ? games.map(g => `
+      <div class="game-item" onclick="selectGame(${JSON.stringify(g.path).replace(/"/g, '&quot;')})">
+        <div>
+          <strong>${g.title}</strong> <span class="tag MEDIUM">${g.source}</span>
+          <div style="font-size:12px;color:var(--muted);font-family:Consolas">${g.path}</div>
+        </div>
+        <span class="tag ${g.turbo_dll_active ? 'FIXED' : 'MEDIUM'}">${g.status}</span>
+      </div>`).join('') : '<div class="sub">No auto-scanned library games matched — use Browse or paste any game folder above.</div>';
 
     el.innerHTML = `
-      <div class="grid-3">
-        <div class="card"><div class="metric-lbl">nvngx_dlssg.dll Detected</div><div class="metric-val">${(a.dll_size_bytes/1048576).toFixed(2)} MB</div><div class="metric-lbl">ANR FG Beta V.B18 Engine</div></div>
-        <div class="card"><div class="metric-lbl">Detected Beta Flaws</div><div class="metric-val" style="color:${a.issue_count?'#f87171':'var(--accent)'}">${a.issue_count} / 7</div><div class="metric-lbl">Binary, JSON & INI Checks</div></div>
-        <div class="card"><div class="metric-lbl">Anti-Cheat Shield</div><div class="metric-val">${a.anticheat.safe_to_inject ? 'SAFE' : 'BLOCKED'}</div><div class="metric-lbl">${a.anticheat.scanned_files} Game Files Verified</div></div>
+      <div class="grid-4">
+        <div class="card"><div class="metric-lbl">ANR Engine Status</div><div class="metric-val" style="font-size:21px">${a.native_shim_active ? 'TURBO v2.0' : (a.anr_installed ? 'STOCK V.B18' : 'NOT INSTALLED')}</div><div class="metric-lbl">Smart-Shield DLL Check</div></div>
+        <div class="card"><div class="metric-lbl">Anti-Cheat Shield</div><div class="metric-val" style="font-size:21px;color:${a.anticheat.safe_to_inject?'var(--accent)':'#f87171'}">${a.anticheat.safe_to_inject ? 'SAFE TO MOD' : 'BLOCKED'}</div><div class="metric-lbl">${a.anticheat.scanned_files} Files Checked</div></div>
+        <div class="card"><div class="metric-lbl">VC++ 2015-2022 CRT</div><div class="metric-val" style="font-size:21px;color:${sys.vcpp_ok?'var(--accent)':'#fcd34d'}">${sys.vcpp_ok ? 'ALL READY' : 'MISSING'}</div><div class="metric-lbl">Runtime Prerequisite</div></div>
+        <div class="card"><div class="metric-lbl">Windows HAGS</div><div class="metric-val" style="font-size:21px">${sys.hags_enabled === true ? 'ON' : (sys.hags_enabled === false ? 'OFF' : 'UNKNOWN')}</div><div class="metric-lbl">GPU Scheduling Check</div></div>
       </div>
       <div class="card">
-        <h2>Binary & Config Audit Report (Stock ANR V.B18 Inspection)</h2>
-        <p class="sub">Direct inspection of <code>size_table.json</code>, <code>path_table.json</code>, <code>nr_fg.ini</code>, <code>nvngx_dlssg.dll</code>, and <code>OptiScaler.ini</code> inside the target folder.</p>
-        ${issuesHtml}
+        <h2>Step 1: Pick Your Game (Auto-Detected on This PC)</h2>
+        <p class="sub">Click any game below — SI-ANR-Turbo verifies Anti-Cheat safety, downloads official ANR FG V.B18 automatically if missing, creates a SHA-256 backup, and upgrades <code>nvngx_dlssg.dll</code> to our Crash-Shielded Smart DLL.</p>
+        <div style="max-height:290px;overflow-y:auto">${gamesHtml}</div>
       </div>`;
   } else if (currentTab === 1) {
+    const row = (k, title, desc) => `
+      <div class="toggle-row">
+        <div><strong>${title}</strong><div class="sub" style="margin:2px 0 0">${desc}</div></div>
+        <input type="checkbox" ${opts[k] ? 'checked' : ''} onchange="toggleOpt('${k}', this.checked)">
+      </div>`;
     el.innerHTML = `
-      <div class="grid-2">
-        <div class="card">
-          <h2>&#128737; Anti-Cheat Ban Shield (Pre-Injection Gate)</h2>
-          <p class="sub">Scans executable trees before writing <code>dxgi.dll</code> or <code>nvngx_dlssg.dll</code> to block online ban risks.</p>
-          <table class="kv-table">
-            <tr><th>Check</th><th>Status</th></tr>
-            <tr><td>EasyAntiCheat (EOS / Classic)</td><td class="good">CLEAN (0 Hooks)</td></tr>
-            <tr><td>BattlEye / Riot Vanguard / RICOCHET</td><td class="good">CLEAN (0 Drivers)</td></tr>
-            <tr><td>Primary Executable Found</td><td style="font-family:Consolas">${a.anticheat.executables[0] || 'game_demo.exe'}</td></tr>
-            <tr><td>VC++ 2015-2022 Runtime Check</td><td class="good">${a.anticheat.missing_vcpp_dlls.length === 0 ? 'ALL 4 DLLs PRESENT' : a.anticheat.missing_vcpp_dlls.join(', ')}</td></tr>
-          </table>
-        </div>
-        <div class="card">
-          <h2>&#128274; SHA-256 Backup & 1-Click Rollback</h2>
-          <p class="sub">Every untouched official file is hashed and mirrored to <code>OptiScaler/si_anr_turbo_backup/</code> before modding.</p>
-          <div class="code-box">{
-  "backup_status": "${a.backup_exists ? 'VERIFIED SHA-256 SNAPSHOT ACTIVE' : 'READY TO SNAPSHOT'}",
-  "files_protected": [
-    "OptiScaler.ini",
-    "OptiScaler/custom/Apex Neural Rendering FG/dlssg/nr_fg.ini",
-    "OptiScaler/custom/Apex Neural Rendering FG/dlssg/size_table.json",
-    "OptiScaler/custom/Apex Neural Rendering FG/dlssg/path_table.json"
-  ]
-}</div>
-        </div>
+      <div class="card">
+        <h2>Step 2: Simple Yes / No Optimization Switches</h2>
+        <p class="sub">Choose which upgrades our installer puts inside the game & native <code>nvngx_dlssg.dll</code>. No INI or JSON editing required.</p>
+        ${row('unlock_tables', 'Unlock All GPUs & 4K Profiles (RTX / GTX 16 / AMD RX / Steam Deck / Arc B390)', 'Adds missing 4K rows, prioritizes DP4A/XMX hardware paths, and registers Intel Arc B390 (0x8086:0xb080).')}
+        ${row('crash_vram_shield', 'Native nvngx_dlssg.dll Crash Shield & 8GB VRAM Cap + NR_BARRIER_ELIDE=1', 'Intercepts null pointers & DX12/Vulkan faults (VEH Crash Shield), caps MultiFrameCount from real DXGI VRAM, and eliminates batch launcher requirement.')}
+        ${row('hud_log_fix', 'Stop HUD / Minimap Ghosting & Disk-Log Stutter', 'Disables LogLevel=5 trace disk writes, fixes OptiScaler DisableUI=auto trap, and guards games missing HUDLess buffers.')}
+        ${row('spike_pacing_guard', 'Smooth Frame Pacing, Spike Suppressor & Teleport Auto-Reset', 'Detects sudden frametime hitches & camera cuts in-DLL and cleanly pauses interpolation / injects DLSSG.Reset.')}
+        ${row('gamepass_vulkan_spoof', 'Xbox Game Pass / Vulkan Spoof Boost (Enable if FG stays greyed out)', 'Forces StreamlineSpoofing=true, SpoofHAGS=true, and Vulkan GPU spoofing.')}
       </div>`;
   } else if (currentTab === 2) {
+    const issuesHtml = a.issues.length ? a.issues.map(i => `
+      <div class="issue-row ${i.severity}">
+        <div><span class="tag ${i.severity}">${i.severity}</span><strong>${i.title}</strong> <span style="color:var(--blue);font-family:Consolas">[${i.file}]</span></div>
+        <div style="color:var(--muted);font-size:13px;margin-top:4px">${i.detail}</div>
+      </div>`).join('') : `<div class="issue-row FIXED"><span class="tag FIXED">ALL 7 FIXED</span><strong>0 Remaining ANR V.B18 Issues</strong> — Native Smart-Shield nvngx_dlssg.dll + all config fixes are active.</div>`;
     el.innerHTML = `
       <div class="card">
-        <h2>&#129504; Fix #1: Neural Table Unlocker (size_table.json & path_table.json)</h2>
-        <p class="sub">Official ANR V.B18 omitted 4K on RTX 40/50, 1080p/1440p on Turing, and all AMD/Intel rows in <code>size_table.json</code>, while leaving RDNA2 & Intel Arc on uncalibrated 'prediction' paths.</p>
-        <table class="kv-table">
-          <tr><th>GPU Architecture</th><th>Stock ANR V.B18</th><th>SI-ANR-Turbo Patched</th></tr>
-          <tr><td>NVIDIA RTX 40 / 50 (Ada / Blackwell)</td><td class="bad">1080p, 1440p only (4K Missing!)</td><td class="good">1080p + 1440p + 2160p 4K [2,6] coopmat</td></tr>
-          <tr><td>NVIDIA GTX 16 / RTX 20 (Turing)</td><td class="bad">2160p only (1080p/1440p Missing!)</td><td class="good">1080p + 1440p + 2160p Unlocked (DP4A INT8)</td></tr>
-          <tr><td>AMD RX 6000 / Steam Deck (RDNA2)</td><td class="bad">Missing in size_table • prediction path</td><td class="good">Full Profile • vulkan-dp4a INT8 Prioritized</td></tr>
-          <tr><td>AMD RX 7000 / 9000 (RDNA3 / RDNA4)</td><td class="bad">Missing in size_table.json</td><td class="good">Full 1080p/1440p/4K • portable-linalg</td></tr>
-          <tr><td>Intel Arc Alchemist / Battlemage</td><td class="bad">coopmat prediction above XMX</td><td class="good">XMX Matrix Engine First (portable-xmx)</td></tr>
-        </table>
+        <h2>Step 3: Pre-Flight Audit & Stock V.B18 Proof (${a.issue_count} Active Issues)</h2>
+        <p class="sub">Real-time scan of <code>nvngx_dlssg.dll</code> (${(a.dll_size_bytes/1024).toFixed(0)} KB), <code>nvngx_dlssg_core.dll</code> (${(a.core_dll_size_bytes/1024).toFixed(0)} KB), JSON tables, and <code>OptiScaler.ini</code>.</p>
+        ${issuesHtml}
       </div>`;
   } else if (currentTab === 3) {
-    el.innerHTML = `
-      <div class="grid-2">
-        <div class="card">
-          <h2>&#128295; Fix #2A: nr_fg.ini VRAM Crash Shield (Issue #46)</h2>
-          <p class="sub">Stock V.B18 defaults to <code>max_generated = 5</code> (up to 6X ring buffer), saturating 8-12GB cards after 15-30 min and causing GPU MMU freezes.</p>
-          <div class="code-box">[nr_fg.ini — BEFORE vs AFTER]
-- max_generated = 5   ; 6X allocation -> high VRAM freeze risk
-+ max_generated = ${a.current_config.nr_fg.max_generated || '1'}   ; VRAM-calibrated (-35% buffer overhead)
-+ path = ${a.current_config.nr_fg.path || 'dp4a'}       ; Forced fastest hardware kernel
-+ scene_cut = 1       ; Cuts interpolation cleanly on camera cuts</div>
-        </div>
-        <div class="card">
-          <h2>&#9889; Fix #2B: Hidden DLL Barrier Elision Launcher</h2>
-          <p class="sub">Extracted string symbol <code>NR_BARRIER_ELIDE</code> from <code>nvngx_dlssg.dll</code> elides redundant synchronization barriers across Vulkan & D3D12 queues.</p>
-          <div class="code-box">[launch_anr_turbo.cmd — Auto-Generated]
-@echo off
-set NR_BARRIER_ELIDE=1
-start "" "%~dp0${a.anticheat.executables[0] || 'game.exe'}" %*</div>
-        </div>
-      </div>`;
-  } else if (currentTab === 4) {
-    el.innerHTML = `
-      <div class="card">
-        <h2>&#128737; Fix #3: HUD Ghosting Shield & Disk-Log Stutter Fix (OptiScaler.ini)</h2>
-        <p class="sub">Solves GitHub Issues #14, #17, #50 & #51 (crosshair/minimap smearing) and eliminates frame-time spikes caused by stock <code>LogToFile=true</code> + <code>LogLevel=5</code>.</p>
-        <table class="kv-table">
-          <tr><th>OptiScaler.ini Setting</th><th>Stock ANR V.B18</th><th>SI-ANR-Turbo Patched</th><th>Impact</th></tr>
-          <tr><td>[Log] LogToFile / LogLevel</td><td class="bad">true / Level 5 (Verbose)</td><td class="good">false / Level 2 (Info)</td><td>Stops continuous disk I/O micro-stutter</td></tr>
-          <tr><td>[FrameGen] DrawUIOverFG / HudlessValidNow</td><td class="bad">auto / auto</td><td class="good">true / true</td><td>Renders game HUD cleanly after FG pass</td></tr>
-          <tr><td>[OptiFG] HUDFix / HUDFixExtended</td><td class="bad">auto / auto</td><td class="good">true / true</td><td>Protects minimap & UI from motion warp</td></tr>
-          <tr><td>[OptiFG] MakeDepthCopy / MakeMVCopy</td><td class="bad">auto / auto</td><td class="good">true / true</td><td>Preserves clean depth & motion vectors</td></tr>
-        </table>
-      </div>`;
-  } else if (currentTab === 5) {
-    el.innerHTML = `
-      <div class="card">
-        <h2>&#9201; Fix #4: Issue #45 Flip-Metering & Frame-Pacing Synchronizer</h2>
-        <p class="sub">Stock V.B18 exhibits uneven frame presentation because Flip Metering and low-latency Reflex/AntiLag synchronization remain unconfigured.</p>
-        <div class="code-box">[FSRFG]
-DisableFlipMetering=false
-FramePacingTuning=true
-FPTSafetyMarginInMs=0.25
-FPTVarianceFactor=0.15
-FPTHybridSpin=true
-
-[NvApi]
-DisableFlipMetering=false
-
-[DLSSG] / [fakenvapi]
-UseGamesReflexMarkers=true
-UseFakenvapi=true
-ForceReflex=2   ; Forces Reflex / AntiLag2 / XeLL timing markers even when locked</div>
-      </div>`;
-  } else if (currentTab === 6) {
+    const t = liveTelem;
     el.innerHTML = `
       <div class="grid-3">
-        <div class="card"><div class="metric-lbl">Frame-Gen GPU Overhead (4K 2x)</div><div class="metric-val">0.89 ms</div><div class="metric-lbl">vs 1.01ms Stock ANR / 1.26ms DLSS</div></div>
-        <div class="card"><div class="metric-lbl">VRAM Ring-Buffer Footprint</div><div class="metric-val">-35%</div><div class="metric-lbl">Prevents 8GB-12GB Freeze (Issue #46)</div></div>
-        <div class="card"><div class="metric-lbl">HUD Ghosting / Frame Pacing</div><div class="metric-val">0 SMEAR</div><div class="metric-lbl">HUDFixExtended + Flip Metering ON</div></div>
+        <div class="card"><div class="metric-lbl">Stream Status</div><div class="metric-val">${t.active ? t.backend : 'STANDBY'}</div><div class="metric-lbl">${t.active ? ('PID ' + t.pid + ' • ' + t.gpu_name) : 'Launch patched game to monitor'}</div></div>
+        <div class="card"><div class="metric-lbl">Live Base Frame Pacing</div><div class="metric-val">${t.active ? (t.effective_fps + ' FPS') : '--'}</div><div class="metric-lbl">${t.active ? (t.avg_frame_ms + ' ms avg • Cap ' + t.vram_cap_multiplier) : 'Telemetry Shared Memory'}</div></div>
+        <div class="card"><div class="metric-lbl">Crashes & Spikes Blocked</div><div class="metric-val">${t.active ? (t.crashes_blocked + ' / ' + t.spike_suppressed_frames) : '0 / 0'}</div><div class="metric-lbl">Crash Shield / Spike Guard</div></div>
       </div>
       <div class="card">
-        <h2>Benchmark Verification: NVIDIA DLSS-G vs Stock ANR V.B18 vs SI-ANR-Turbo</h2>
-        <p class="sub">Lower neural frame-generation latency means higher real base FPS headroom while keeping 1% low frame-pacing flat.</p>
-        <div style="margin-bottom:14px">
-          <div style="font-size:14px;font-weight:700">NVIDIA DLSS Frame Gen (Proprietary • RTX 40/50 Only) — 1.26 ms/frame</div>
-          <div class="bar-wrap"><div class="bar-fill" style="width:82%;background:#64748b;color:#fff">1.26 ms overhead • RTX 40/50 locked</div></div>
-        </div>
-        <div style="margin-bottom:14px">
-          <div style="font-size:14px;font-weight:700">Stock Apex Neural Rendering (ANR V.B18 Beta) — 1.01 ms/frame</div>
-          <div class="bar-wrap"><div class="bar-fill" style="width:66%;background:var(--amber)">1.01 ms overhead • HUD ghosting + LogLevel=5</div></div>
-        </div>
-        <div>
-          <div style="font-size:14px;font-weight:700">SI-ANR-Turbo Mod (NR_BARRIER_ELIDE=1 + Calibrated Tables + Flip Metering) — 0.89 ms/frame</div>
-          <div class="bar-wrap"><div class="bar-fill" style="width:56%;background:var(--accent)">0.89 ms overhead • All GPUs • Zero Stutter • Ban Shield</div></div>
-        </div>
+        <h2>Bonus: Live Native nvngx_dlssg.dll Shared-Memory Telemetry</h2>
+        <p class="sub">Updates live at ~1 Hz whenever any DirectX 12 or Vulkan game loads our upgraded <code>nvngx_dlssg.dll</code>.</p>
+        <pre style="background:#070c14;border:1px solid #223554;border-radius:10px;padding:14px;font-family:Consolas,monospace;font-size:13px;color:#cbd5e1">${JSON.stringify(t, null, 2)}</pre>
       </div>`;
   }
 }
 
-const urlParams = new URLSearchParams(window.location.search);
-if (urlParams.has('tab')) {
-  const t = parseInt(urlParams.get('tab'), 10);
-  if (!Number.isNaN(t) && t >= 0 && t <= 6) {
-    currentTab = t;
-    for (let i = 0; i < 7; i++) {
-      document.getElementById('nav' + i).className = 'nav-btn' + (i === t ? ' active' : '');
-    }
-  }
-}
 fetchState();
+setInterval(pollTelemetry, 900);
 </script>
 </body>
 </html>
@@ -961,7 +1090,7 @@ fetchState();
 
 
 def start_web_server(target_dir: Path, port: int = 8788) -> ThreadingHTTPServer:
-    """Create and bind the live SI-ANR-Turbo local HTTP control server."""
+    """Create and bind the live SI-ANR-Turbo v2.0 local HTTP control server."""
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -990,11 +1119,20 @@ def start_web_server(target_dir: Path, port: int = 8788) -> ThreadingHTTPServer:
                 qs = parsed.query
                 gdir = target_dir
                 if "game_dir=" in qs:
-                    from urllib.parse import unquote
                     val = unquote(qs.split("game_dir=", 1)[1].split("&", 1)[0]).strip()
                     if val:
                         gdir = Path(val)
-                self._send_json({"ok": True, "audit": audit_installation(gdir)})
+                demos = [Path(DEFAULT_TARGET_DIR)] if Path(DEFAULT_TARGET_DIR).exists() else []
+                self._send_json({
+                    "ok": True,
+                    "audit": audit_installation(gdir),
+                    "system": detect_system_gpu(),
+                    "games": discover_installed_games(extra_dirs=demos),
+                })
+                return
+
+            if parsed.path == "/api/telemetry":
+                self._send_json(read_live_telemetry())
                 return
 
             self.send_error(404)
@@ -1005,12 +1143,28 @@ def start_web_server(target_dir: Path, port: int = 8788) -> ThreadingHTTPServer:
             body = json.loads(raw.decode("utf-8")) if raw else {}
             gdir = Path(body.get("game_dir") or str(target_dir))
             if self.path == "/api/apply":
-                res = apply_all_patches(gdir, profile_key=body.get("profile", "rtx_30_20_8gb"))
-                self._send_json(res)
+                self._send_json(apply_all_patches(gdir, profile_key=body.get("profile", "rtx_30_20_8gb"), options=body.get("options")))
+                return
+            if self.path == "/api/oneclick":
+                self._send_json(one_click_setup_and_patch(gdir, profile_key=body.get("profile", "rtx_30_20_8gb"), options=body.get("options")))
+                return
+            if self.path == "/api/launch":
+                self._send_json(launch_game_directory(gdir))
                 return
             if self.path == "/api/rollback":
-                res = rollback_backup(gdir)
-                self._send_json(res)
+                self._send_json(rollback_backup(gdir))
+                return
+            if self.path == "/api/browse":
+                picked = ""
+                try:
+                    tmp_root = tk.Tk()
+                    tmp_root.withdraw()
+                    tmp_root.attributes("-topmost", True)
+                    picked = filedialog.askdirectory(initialdir=str(target_dir))
+                    tmp_root.destroy()
+                except Exception:
+                    picked = ""
+                self._send_json({"ok": True, "path": picked})
                 return
             self.send_error(404)
 
@@ -1018,72 +1172,144 @@ def start_web_server(target_dir: Path, port: int = 8788) -> ThreadingHTTPServer:
 
 
 # ---------------------------------------------------------------------------
-# Native Zero-Dependency Tkinter Desktop GUI (--tk)
+# Native Desktop Tkinter App (--tk) — 3-Step Gamer Flow + Yes/No Switches
 # ---------------------------------------------------------------------------
 def launch_tk_gui(initial_dir: Path) -> None:
-    """Launch zero-dependency Tkinter dark-mode desktop control center."""
+    """Launch sleek dark-mode native desktop installer & optimizer (no browser required)."""
+    sys_info = detect_system_gpu()
+    demos = [Path(DEFAULT_TARGET_DIR)] if Path(DEFAULT_TARGET_DIR).exists() else []
+    games = discover_installed_games(extra_dirs=demos)
+
     root = tk.Tk()
-    root.title(f"SI-ANR-Turbo v{APP_VERSION} — Apex Neural Rendering Optimizer")
-    root.geometry("980x660")
-    root.configure(bg="#090f1a")
+    root.title(f"SI-ANR-Turbo v{APP_VERSION} — 1-Click Neural FG Installer & Smart-Shield DLL")
+    root.geometry("1040x730")
+    root.configure(bg="#070c14")
 
     style = ttk.Style()
     style.theme_use("clam")
-    style.configure("TFrame", background="#090f1a")
-    style.configure("TLabel", background="#090f1a", foreground="#e2ecff", font=("Segoe UI", 10))
+    style.configure("TFrame", background="#070c14")
+    style.configure("Card.TFrame", background="#121e31")
+    style.configure("TLabel", background="#070c14", foreground="#eef4ff", font=("Segoe UI", 10))
     style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), foreground="#00e5a3")
+    style.configure("Sub.TLabel", font=("Segoe UI", 9), foreground="#8ea5c8")
+    style.configure("TCheckbutton", background="#070c14", foreground="#e2ecff", font=("Segoe UI", 10))
 
-    top = ttk.Frame(root, padding=14)
+    top = ttk.Frame(root, padding=(16, 12))
     top.pack(fill=tk.X)
-    ttk.Label(top, text="SI-ANR-Turbo — Apex Neural Rendering Mod & Safety Guard", style="Header.TLabel").pack(anchor=tk.W)
+    ttk.Label(top, text="SI-ANR-Turbo v2.0 — Native nvngx_dlssg.dll Smart-Shield & 1-Click Optimizer", style="Header.TLabel").pack(anchor=tk.W)
+    vram_gb = round(sys_info["vram_mb"] / 1024, 1) if sys_info["vram_mb"] else 0
+    ttk.Label(
+        top,
+        text=f"GPU: {sys_info['name']} ({vram_gb} GB VRAM)  |  VC++ Runtime: {'OK' if sys_info['vcpp_ok'] else 'MISSING'}  |  HAGS: {'ON' if sys_info['hags_enabled'] else 'OFF/Auto'}",
+        style="Sub.TLabel",
+    ).pack(anchor=tk.W, pady=(2, 0))
 
-    row = ttk.Frame(root, padding=(14, 4))
+    # Step 1: Game Picker
+    row = ttk.Frame(root, padding=(16, 6))
     row.pack(fill=tk.X)
+    ttk.Label(row, text="Step 1 — Game Folder:").pack(side=tk.LEFT, padx=(0, 8))
     dir_var = tk.StringVar(value=str(initial_dir))
-    prof_var = tk.StringVar(value="rtx_30_20_8gb")
-    ttk.Entry(row, textvariable=dir_var, width=72).pack(side=tk.LEFT, padx=(0, 8))
+    prof_var = tk.StringVar(value=sys_info["recommended_profile"])
 
-    def _browse() -> None:
-        picked = filedialog.askdirectory(initialdir=dir_var.get())
-        if picked:
-            dir_var.set(picked)
+    game_choices = [f"[{g['source']}] {g['title']} -> {g['path']}" for g in games]
+    combo = ttk.Combobox(row, values=game_choices, width=42, state="readonly")
+    if game_choices:
+        combo.pack(side=tk.LEFT, padx=(0, 8))
 
-    ttk.Button(row, text="Browse", command=_browse).pack(side=tk.LEFT, padx=4)
+    def _on_pick_game(_evt: Any) -> None:
+        sel = combo.get()
+        if " -> " in sel:
+            dir_var.set(sel.split(" -> ", 1)[1])
+            _write(audit_installation(Path(dir_var.get())))
 
-    log_box = scrolledtext.ScrolledText(root, bg="#0d1726", fg="#cde2ff", font=("Consolas", 10), height=24)
-    log_box.pack(fill=tk.BOTH, expand=True, padx=14, pady=10)
+    combo.bind("<<ComboboxSelected>>", _on_pick_game)
+    ttk.Entry(row, textvariable=dir_var, width=46).pack(side=tk.LEFT, padx=(0, 6))
+    ttk.Button(row, text="Browse", command=lambda: (p := filedialog.askdirectory(initialdir=dir_var.get())) and dir_var.set(p)).pack(side=tk.LEFT)
+
+    # Step 2: Yes / No Switches
+    chk_frame = ttk.Frame(root, padding=(16, 8))
+    chk_frame.pack(fill=tk.X)
+    ttk.Label(chk_frame, text="Step 2 — Choose Optimizations (Yes / No):", font=("Segoe UI", 10, "bold"), foreground="#38bdf8").pack(anchor=tk.W, pady=(0, 4))
+    var_tables = tk.BooleanVar(value=True)
+    var_crash = tk.BooleanVar(value=True)
+    var_hud = tk.BooleanVar(value=True)
+    var_spike = tk.BooleanVar(value=True)
+    var_spoof = tk.BooleanVar(value=False)
+
+    ttk.Checkbutton(chk_frame, text="YES: Unlock All GPUs & 4K Tables (RTX 20-50, GTX 16, AMD RX 6000-9000, Steam Deck, Arc B390)", variable=var_tables).pack(anchor=tk.W)
+    ttk.Checkbutton(chk_frame, text="YES: Deploy Upgraded nvngx_dlssg.dll (VEH Crash Shield + 8GB VRAM Auto-Cap + NR_BARRIER_ELIDE=1)", variable=var_crash).pack(anchor=tk.W)
+    ttk.Checkbutton(chk_frame, text="YES: Fix HUD / Minimap Ghosting & Disable Verbose Trace Disk Log (LogLevel=5)", variable=var_hud).pack(anchor=tk.W)
+    ttk.Checkbutton(chk_frame, text="YES: Smooth Frame Pacing, Suppress Choppy Spikes & Teleport Auto-Reset", variable=var_spike).pack(anchor=tk.W)
+    ttk.Checkbutton(chk_frame, text="OPTIONAL: Xbox Game Pass / Vulkan Spoof Boost (enable if DLSS FG toggle is hidden)", variable=var_spoof).pack(anchor=tk.W)
+
+    def _current_opts() -> dict[str, Any]:
+        return {
+            "unlock_tables": bool(var_tables.get()),
+            "crash_vram_shield": bool(var_crash.get()),
+            "hud_log_fix": bool(var_hud.get()),
+            "spike_pacing_guard": bool(var_spike.get()),
+            "gamepass_vulkan_spoof": bool(var_spoof.get()),
+        }
+
+    log_box = scrolledtext.ScrolledText(root, bg="#0b1322", fg="#cde2ff", font=("Consolas", 10), height=18)
+    log_box.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
     def _write(obj: Any) -> None:
         log_box.delete("1.0", tk.END)
         log_box.insert(tk.END, json.dumps(obj, indent=2))
 
-    btns = ttk.Frame(root, padding=14)
+    # Step 3: 1-Click Actions
+    btns = ttk.Frame(root, padding=(16, 10))
     btns.pack(fill=tk.X)
-    ttk.Combobox(btns, textvariable=prof_var, values=list(GPU_PROFILES.keys()), width=22, state="readonly").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Button(btns, text="1. Audit ANR V.B18", command=lambda: _write(audit_installation(Path(dir_var.get())))).pack(side=tk.LEFT, padx=4)
-    ttk.Button(btns, text="2. Apply All 4 Mods", command=lambda: _write(apply_all_patches(Path(dir_var.get()), prof_var.get()))).pack(side=tk.LEFT, padx=4)
-    ttk.Button(btns, text="3. Restore Backup", command=lambda: _write(rollback_backup(Path(dir_var.get())))).pack(side=tk.LEFT, padx=4)
+    ttk.Combobox(btns, textvariable=prof_var, values=list(GPU_PROFILES.keys()), width=20, state="readonly").pack(side=tk.LEFT, padx=(0, 8))
 
-    _write(audit_installation(initial_dir))
+    def _run_oneclick() -> None:
+        res = one_click_setup_and_patch(Path(dir_var.get()), profile_key=prof_var.get(), options=_current_opts())
+        _write(res)
+        if res.get("ok"):
+            messagebox.showinfo("SI-ANR-Turbo v2.0", "Native Smart-Shield DLL & selected optimizations installed successfully!")
+        else:
+            messagebox.showwarning("SI-ANR-Turbo v2.0", res.get("error", "Operation halted"))
+
+    ttk.Button(btns, text="1. Scan Game", command=lambda: _write(audit_installation(Path(dir_var.get())))).pack(side=tk.LEFT, padx=4)
+    ttk.Button(btns, text="2. 1-Click Download + Install & Mod", command=_run_oneclick).pack(side=tk.LEFT, padx=4)
+    ttk.Button(btns, text="3. Launch Game", command=lambda: _write(launch_game_directory(Path(dir_var.get())))).pack(side=tk.LEFT, padx=4)
+    ttk.Button(btns, text="4. Restore Backup", command=lambda: _write(rollback_backup(Path(dir_var.get())))).pack(side=tk.LEFT, padx=4)
+
+    _write({"audit": audit_installation(initial_dir), "live_telemetry": read_live_telemetry()})
     root.mainloop()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SI-ANR-Turbo: ANR FG V.B18 Auditor, Safety Guard & Patcher")
-    parser.add_argument("command", nargs="?", default="web", choices=["web", "tk", "audit", "apply", "rollback", "scan"])
-    parser.add_argument("--game-dir", default=DEFAULT_TARGET_DIR, help="Path to game .exe folder containing OptiScaler/ANR")
+    parser = argparse.ArgumentParser(description="SI-ANR-Turbo v2.0: Native nvngx_dlssg.dll Smart-Shield & 1-Click Optimizer")
+    parser.add_argument("command", nargs="?", default="web", choices=["web", "tk", "audit", "apply", "oneclick", "rollback", "scan", "telemetry", "discover"])
+    parser.add_argument("--game-dir", default=DEFAULT_TARGET_DIR, help="Path to game .exe folder")
     parser.add_argument("--profile", default="rtx_30_20_8gb", choices=list(GPU_PROFILES.keys()))
     parser.add_argument("--port", type=int, default=8788)
     parser.add_argument("--force", action="store_true", help="Override Anti-Cheat gate (NOT recommended)")
+    parser.add_argument("--spoof", action="store_true", help="Enable Game Pass / Vulkan spoofing boost")
     args = parser.parse_args()
 
     target = Path(args.game_dir)
+    opts = dict(DEFAULT_OPTIONS)
+    if args.spoof:
+        opts["gamepass_vulkan_spoof"] = True
+
     if args.command == "audit":
         print(json.dumps(audit_installation(target), indent=2))
     elif args.command == "scan":
         print(json.dumps(scan_anticheat(target), indent=2))
+    elif args.command == "telemetry":
+        print(json.dumps(read_live_telemetry(), indent=2))
+    elif args.command == "discover":
+        print(json.dumps({"system": detect_system_gpu(), "games": discover_installed_games()}, indent=2))
     elif args.command == "apply":
-        res = apply_all_patches(target, profile_key=args.profile, force=args.force)
+        res = apply_all_patches(target, profile_key=args.profile, force=args.force, options=opts)
+        print(json.dumps(res, indent=2))
+        if not res.get("ok"):
+            sys.exit(1)
+    elif args.command == "oneclick":
+        res = one_click_setup_and_patch(target, profile_key=args.profile, options=opts)
         print(json.dumps(res, indent=2))
         if not res.get("ok"):
             sys.exit(1)
@@ -1097,7 +1323,7 @@ def main() -> None:
     elif args.command == "web":
         srv = start_web_server(target, port=args.port)
         url = f"http://127.0.0.1:{args.port}/"
-        print(f"SI-ANR-Turbo Control Center live at {url}", flush=True)
+        print(f"SI-ANR-Turbo v{APP_VERSION} Control Center live at {url}", flush=True)
         for browser in (
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",

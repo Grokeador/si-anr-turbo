@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+native/bin/mock_core_dll.dll
+native/bin/*.lib
+*.log

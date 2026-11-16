@@ -1,35 +1,48 @@
-# SI-ANR-Turbo
+# SI-ANR-Turbo v2.0
 
-Open-source **Optimizer, Anti-Cheat Ban Shield & Bug-Fix Patcher** for **[Apex Neural Rendering (ANR FG V.B18)](https://github.com/apex-compute/ANR)** by Apex Compute.
+Open-source **Native `nvngx_dlssg.dll` Smart-Shield Upgrade & 1-Click Installer** for **[Apex Neural Rendering (ANR FG V.B18)](https://github.com/apex-compute/ANR)** by Apex Compute.
 
-While ANR FG brings cross-GPU AI Frame Generation to NVIDIA RTX/GTX 16, AMD Radeon RX 5000-9000, Steam Deck, and Intel Arc, the stock V.B18 beta package ships with several configuration gaps and open GitHub issues (`#14`, `#17`, `#45`, `#46`, `#50`, `#51`). **SI-ANR-Turbo** fixes them automatically with a Dark Desktop Control Center, Tkinter GUI, CLI, and SHA-256 verified 1-click rollback.
+Unlike simple INI editors, **SI-ANR-Turbo v2.0** compiles and deploys a real **native x64 C proxy DLL (`nvngx_dlssg.dll` -> `nvngx_dlssg_core.dll`)** alongside a zero-jargon 1-Click Desktop App that automatically scans your Steam/Epic/Xbox/GOG games, downloads official ANR V.B18 from GitHub, verifies Anti-Cheat safety & VC++ runtimes, backs up everything with SHA-256, and lets you toggle fixes with simple Yes/No switches.
 
-## What SI-ANR-Turbo Fixes
+## What Our Upgraded Native `nvngx_dlssg.dll` Adds Inside the Game Process
 
-| Fix Module | Stock ANR V.B18 Flaw | SI-ANR-Turbo Mod |
-| --- | --- | --- |
-| **1. Neural Table Unlocker** (`size_table.json`, `path_table.json`) | Missing `2160p` (4K) for Ada/Blackwell, missing `1080p`/`1440p` for Turing, zero AMD/Intel entries in `size_table.json`, and prediction-only paths on RDNA2/Steam Deck/Arc Alchemist | Unlocks full `1080p`/`1440p`/`2160p` entries across RTX, GTX 16, AMD RDNA2/3/4, Steam Deck, and Intel Arc; prioritizes hardware `vulkan-dp4a` / `portable-xmx` / `coopmat` kernels |
-| **2. VRAM Crash & Barrier Elision** (`nr_fg.ini`, `launch_anr_turbo.cmd`) | Defaults to `max_generated = 5` (6X ring buffer), risking GPU MMU freezes on 8-12GB GPUs (Issue #46) | Calibrates `max_generated` safely (`1` for 6-8GB VRAM, `2` for 12-24GB VRAM, saving ~35% buffer memory) and sets `NR_BARRIER_ELIDE=1` compiled inside `nvngx_dlssg.dll` |
-| **3. HUD Ghosting & Log Stutter Fix** (`OptiScaler.ini`) | Ships with `LogToFile=true` + `LogLevel=5` (constant disk writes) and HUD/depth flags on `auto` (Issues #14, #17, #50, #51) | Sets `LogToFile=false`, `LogLevel=2`, enables `DrawUIOverFG=true`, `HudlessValidNow=true`, `HUDFix=true`, `HUDFixExtended=true`, `MakeDepthCopy=true`, `MakeMVCopy=true` |
-| **4. Flip-Metering Pacing + Ban Shield** (`OptiScaler.ini` + Guard) | Uncalibrated Flip Metering & Reflex state (Issue #45), zero anti-cheat warning before DLL injection | Enables `DisableFlipMetering=false`, `FramePacingTuning=true`, `FPTSafetyMarginInMs=0.25`, `FPTHybridSpin=true`, `ForceReflex=2`; blocks injection if EasyAntiCheat/BattlEye/Vanguard is detected and stores SHA-256 backups |
+1. **Pre-Load `NR_BARRIER_ELIDE=1` Injection** — Automatically sets `NR_BARRIER_ELIDE=1` inside the game process before loading `nvngx_dlssg_core.dll`, so launching directly from **Steam, Epic, or Xbox Game Pass** keeps barrier elision active with no batch script required.
+2. **Live DXGI VRAM Detection & `MultiFrameCount` Clamp (Issues `#46`, `#60`)** — Queries the active hardware GPU via `IDXGIFactory1` and caps `DLSSG.MultiFrameCount` safely (`2X` on <=8GB GPUs, `3X` on 10-12GB GPUs, `5X` on 16GB+), preventing `0x8007000E` `CreateComputePipelineState` out-of-memory errors and GPU MMU freezes.
+3. **Null Parameter Guard & VEH Crash Shield (Issues `#40`, `#58`, `#72`)** — Validates `CmdList`, `FeatureHandle`, and `InParameters` before calling Apex's core binary and wraps `CreateFeature` / `EvaluateFeature` in a thread-local Vectored Exception Handler that cleanly switches to passthrough instead of crashing to desktop on `0xC0000005`.
+4. **Missing HUDLess / UI Buffer Shield (Issue `#24`)** — Detects frames where the game supplies neither `DLSSG.HUDLess` nor `DLSSG.UI` / `DLSSG.UIAlpha`, enables `DLSSG.UserInterfaceRecompositionEnabled`, and protects minimaps/crosshairs from multi-frame warping.
+5. **Frametime Spike & Camera-Teleport Scene-Cut Guard (Issues `#64`, `#68`)** — Tracks per-frame QPC delta timing and camera position/FOV jumps; pauses interpolation (`DLSSG.OutputDisableInterpolation`) during shader/respawn hitches and injects `DLSSG.Reset` on sudden camera cuts.
+6. **Live Shared-Memory Telemetry (`Local\SI_ANR_Turbo_Telemetry_v2`)** — Streams real-time base FPS, active DX12/Vulkan backend, detected GPU/VRAM, clamped frames, spike suppressions, and blocked faults straight to the SI-ANR-Turbo UI.
+
+## What Our 1-Click Installer & Tables Fix (`size_table.json`, `path_table.json`, `nr_fg.ini`, `OptiScaler.ini`)
+
+- **Auto-Download & Vulkan/DX12 Detection**: Fetches official `anr-fg-V.B18-full.zip` from `apex-compute/ANR`, installs `dxgi.dll` or `winmm.dll` automatically based on game engine, and stores SHA-256 backups.
+- **Anti-Cheat Ban Shield**: Scans for EasyAntiCheat, BattlEye, Vanguard, FACEIT, GameGuard, XIGNCODE, and RICOCHET before touching any file.
+- **Full GPU & 4K Unlocker**: Unlocks 4K (`2160p`) on Ada/Blackwell, 1080p/1440p on Turing, adds AMD RDNA1–4 / Steam Deck + Intel Arc tables, and registers **Intel Arc B390 (`0x8086:0xb080`, Issue `#22`)**.
+- **HUD & Flip-Metering Fixes (Issues `#14`, `#17`, `#45`, `#50`, `#51`)**: Disables `LogLevel=5` disk trace I/O stutter, fixes `DisableUI=auto` (`DisableUI=false`, `DrawUIOverFG=true`, `PreserveSwapChain=true`, `SkipResizeBuffers=true`), configures `FramePacingTuning` + `ForceReflex=2`, and offers an optional **Xbox Game Pass / Vulkan Spoof Boost (Issue `#15`, `#55`)**.
 
 ## Quick Start
 
-```bash
-# Launch Desktop App UI
-python si_anr_turbo.py web --game-dir "C:\Path\To\Your\Game"
+Double-click **`Launch_SI_ANR_Turbo.bat`** or run:
 
-# Launch zero-dependency Tkinter GUI
-python si_anr_turbo.py tk --game-dir "C:\Path\To\Your\Game"
+```powershell
+# Launch 1-Click Dark Desktop App
+python si_anr_turbo.py web
 
-# CLI Audit, Apply & Safe Rollback
-python si_anr_turbo.py audit --game-dir "C:\Path\To\Your\Game"
-python si_anr_turbo.py apply --game-dir "C:\Path\To\Your\Game" --profile rtx_30_20_8gb
+# Launch Native Tkinter Window (no browser needed)
+python si_anr_turbo.py tk
+
+# 1-Click CLI Download + Install + Upgrade
+python si_anr_turbo.py oneclick --game-dir "C:\Path\To\Your\Game"
+
+# Verify & Restore Original Files (SHA-256 Verified)
 python si_anr_turbo.py rollback --game-dir "C:\Path\To\Your\Game"
 ```
 
-## Automated Tests
+## Rebuild Native DLL from Source
 
-```bash
+Requires Zig 0.17+ (`winget install zig.zig`):
+
+```powershell
+python native/build_dll.py
 python -m unittest test_turbo.py -v
 ```

@@ -1,0 +1,25 @@
+LIBRARY nvngx_dlssg
+EXPORTS
+    NRFG_PresentationControl
+    NVSDK_NGX_D3D12_CreateFeature
+    NVSDK_NGX_D3D12_EvaluateFeature
+    NVSDK_NGX_D3D12_GetFeatureRequirements
+    NVSDK_NGX_D3D12_GetScratchBufferSize
+    NVSDK_NGX_D3D12_Init
+    NVSDK_NGX_D3D12_Init_Ext
+    NVSDK_NGX_D3D12_PopulateParameters_Impl
+    NVSDK_NGX_D3D12_ReleaseFeature
+    NVSDK_NGX_D3D12_Shutdown
+    NVSDK_NGX_D3D12_Shutdown1
+    NVSDK_NGX_VULKAN_CreateFeature
+    NVSDK_NGX_VULKAN_CreateFeature1
+    NVSDK_NGX_VULKAN_EvaluateFeature
+    NVSDK_NGX_VULKAN_GetFeatureRequirements
+    NVSDK_NGX_VULKAN_GetScratchBufferSize
+    NVSDK_NGX_VULKAN_Init
+    NVSDK_NGX_VULKAN_Init_Ext
+    NVSDK_NGX_VULKAN_Init_Ext2
+    NVSDK_NGX_VULKAN_PopulateParameters_Impl
+    NVSDK_NGX_VULKAN_ReleaseFeature
+    NVSDK_NGX_VULKAN_Shutdown
+    NVSDK_NGX_VULKAN_Shutdown1
